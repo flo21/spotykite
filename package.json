@@ -1,0 +1,21 @@
+{
+  "name": "spotykite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plateforme V1 de reservation et Cartes Cadeaux SpotyKite kitesurf en France.",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
+    "dev:server": "npm run dev --workspace server",
+    "dev:client": "npm run dev --workspace client",
+    "install:all": "npm install",
+    "seed": "npm run seed --workspace server",
+    "seed:partners": "npm run seed:partners --workspace server"
+  },
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
