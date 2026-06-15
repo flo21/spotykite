@@ -18,7 +18,20 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }));
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'https://spotykite.com',
+  'https://www.spotykite.com',
+  ...(process.env.CLIENT_ORIGIN || '').split(',').map((origin) => origin.trim()).filter(Boolean)
+]);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '12mb' }));
 app.use('/uploads', express.static(uploadsDir));
 

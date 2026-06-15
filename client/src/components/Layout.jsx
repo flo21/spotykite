@@ -205,7 +205,11 @@ export default function Layout() {
           </div>
           <div><b>Experience</b><p className="mt-2 text-sm text-muted">Baptemes, stages, coaching et week-ends kite.</p></div>
           <div><b>Confiance</b><p className="mt-2 text-sm text-muted">Moniteurs diplomes, materiel fourni, report meteo.</p></div>
-          <div><b>Admin</b><Link to="/admin" className="mt-2 block text-sm text-muted hover:text-ocean">Dashboard</Link></div>
+          <div>
+            <b>Informations</b>
+            <Link to="/cgv" className="mt-2 block text-sm text-muted hover:text-ocean">CGV</Link>
+            <Link to="/admin" className="mt-2 block text-sm text-muted hover:text-ocean">Dashboard</Link>
+          </div>
         </div>
       </footer>
     </div>
