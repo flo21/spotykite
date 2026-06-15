@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Calendar, CheckCircle2, CreditCard, UserRound } from 'lucide-react';
 import { api } from '../api.js';
 import Loading from '../components/Loading.jsx';
+import { publicSchoolLocation, publicSchoolTitle } from '../utils/schoolDisplay.js';
 
 export default function Reservation() {
   const [searchParams] = useSearchParams();
@@ -111,7 +112,7 @@ export default function Reservation() {
     if (isGiftCard || !school || !offer) return;
     window.localStorage.setItem('currentBooking', JSON.stringify({
       schoolId: school.id,
-      schoolName: school.name,
+      schoolName: publicSchoolTitle(school),
       formulaId: offer.id,
       formulaName: offer.name,
       price: offer.price,
@@ -194,8 +195,8 @@ export default function Reservation() {
     return (
       <main className="section pt-12">
         <div className="card mx-auto max-w-2xl p-8 text-center">
-          <h1 className="text-4xl font-black text-navy">{!canBookSchool && school ? 'Réservation indisponible' : 'Réservation incomplète'}</h1>
-          <p className="mt-3 text-muted">{!canBookSchool && school ? 'Cette école n’est pas encore réservable en ligne.' : 'Sélectionnez une école et une formule avant de démarrer votre réservation.'}</p>
+          <h1 className="text-4xl font-black text-navy">{!canBookSchool && school ? 'Préparez votre stage' : 'Réservation incomplète'}</h1>
+          <p className="mt-3 text-muted">{!canBookSchool && school ? 'Faites votre demande et notre équipe vous proposera la solution la plus adaptée sur ce spot.' : 'Sélectionnez un spot et une formule avant de démarrer votre réservation.'}</p>
           <Link to="/ecoles" className="btn-primary mt-6 justify-center">Voir les écoles</Link>
         </div>
       </main>
@@ -240,7 +241,7 @@ export default function Reservation() {
         <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:py-14">
           <p className="eyebrow">Tunnel de réservation</p>
           <h1 className="text-5xl font-black leading-none text-white sm:text-7xl">{isGiftCard ? 'Offrir une carte cadeau' : 'Réserver votre stage'}</h1>
-          <p className="mt-3 text-lg font-bold text-white/80">{isGiftCard ? 'Carte cadeau Spotykite · 199 € · valable 1 an' : `${school.name} · ${school.city}`}</p>
+          <p className="mt-3 text-lg font-bold text-white/80">{isGiftCard ? 'Carte cadeau Spotykite · 199 € · valable 1 an' : `${publicSchoolTitle(school)} · ${publicSchoolLocation(school)}`}</p>
         </div>
       </section>
 
@@ -351,7 +352,7 @@ export default function Reservation() {
                                 {item.normalPrice && item.normalPrice !== item.appliedPrice ? <><span className="text-muted line-through">{item.normalPrice} €</span> {item.appliedPrice} €</> : `${item.appliedPrice} €`}
                               </span>
                             )}
-                            <span className="mt-1 block text-xs font-black uppercase">{isAvailable ? `${item.availablePlaces} place${Number(item.availablePlaces) > 1 ? 's' : ''} disponible${Number(item.availablePlaces) > 1 ? 's' : ''}` : 'Indisponible'}</span>
+                            <span className="mt-1 block text-xs font-black uppercase">{isAvailable ? `${item.availablePlaces} place${Number(item.availablePlaces) > 1 ? 's' : ''} disponible${Number(item.availablePlaces) > 1 ? 's' : ''}` : 'Complet'}</span>
                           </button>
                         );
                       })}
@@ -374,7 +375,7 @@ export default function Reservation() {
                 <div className="grid gap-4">
                   <h2 className="text-4xl font-black text-navy">Étape 3 : Récapitulatif</h2>
                   <div className="grid gap-3">
-                    <SummaryRow label="École" value={school.name} />
+                    <SummaryRow label="Spot" value={school.spot || school.city} />
                     <SummaryRow label="Formule" value={offer.name} />
                     <SummaryRow label="Date" value={booking.dateFlexible ? 'Date à définir' : booking.desiredDate} />
                     <SummaryRow label="Prix" value={`${selectedPrice} €${selectedAvailability?.specialOfferName ? ` · ${selectedAvailability.specialOfferName}` : ''}`} />
@@ -413,7 +414,7 @@ export default function Reservation() {
               </div>
             ) : (
               <div className="mt-5 grid gap-3">
-                <SummaryRow label="École" value={school.name} />
+                <SummaryRow label="Spot" value={school.spot || school.city} />
                 <SummaryRow label="Formule" value={offer.name} />
                 <SummaryRow label="Durée" value={offer.duration} />
                 <SummaryRow label="Niveau" value={offer.level} />

@@ -21,6 +21,7 @@ import {
 import { api } from '../api.js';
 import Loading from '../components/Loading.jsx';
 import SchoolCard from '../components/SchoolCard.jsx';
+import { publicSchoolLocation, publicSchoolTitle } from '../utils/schoolDisplay.js';
 
 export default function SchoolDetail() {
   const { slug } = useParams();
@@ -131,7 +132,7 @@ export default function SchoolDetail() {
 function BookingSummary({ school, selectedFormula }) {
   const practical = school.practical || {};
   const rows = [
-    ['École', school.name],
+    ['Spot', school.spot || school.city],
     ['Formule', selectedFormula?.name || 'À sélectionner'],
     ['À partir de', selectedFormula?.price ? `${selectedFormula.price} €` : school.startingPrice ? `${school.startingPrice} €` : 'Sur demande'],
     ['Durée', selectedFormula?.duration],
@@ -177,25 +178,23 @@ function BookingSummary({ school, selectedFormula }) {
 function UnavailableBookingAside({ school, selectedFormula }) {
   return (
     <aside className="hidden h-fit rounded-3xl border border-border bg-white p-6 shadow-lift lg:block">
-      <h2 className="text-2xl font-black text-navy">Réservation non disponible</h2>
+      <h2 className="text-2xl font-black text-navy">Préparez votre stage</h2>
       <p className="mt-3 text-sm font-bold leading-relaxed text-muted">
-        Cette école n’est pas encore réservable en ligne. Découvrez les écoles Spotykite disponibles autour de ce spot.
+        Nous sélectionnons pour vous les meilleures disponibilités sur ce spot. Faites votre demande et notre équipe vous proposera la solution la plus adaptée.
       </p>
       <LeadRequestForm school={school} selectedFormula={selectedFormula} compact />
-      <Link to={nearbySchoolsUrl(school)} className="btn-primary mt-5 w-full justify-center">Voir les écoles disponibles</Link>
     </aside>
   );
 }
 
 function UnavailableBookingCta({ school, selectedFormula }) {
   return (
-    <section className="rounded-[2rem] border border-turquoise/25 bg-sky/50 p-6 sm:p-8">
-      <h2 className="text-3xl font-black text-navy">Intéressé par un stage dans cette école ?</h2>
+    <section id="availability-request" className="rounded-[2rem] border border-turquoise/25 bg-sky/50 p-6 sm:p-8">
+      <h2 className="text-3xl font-black text-navy">Préparez votre stage</h2>
       <p className="mt-3 max-w-2xl text-sm font-bold text-muted">
-        Laissez vos coordonnées, nous vous recontactons pour vous aider à trouver une formule disponible.
+        Nous sélectionnons pour vous les meilleures disponibilités sur ce spot. Faites votre demande et notre équipe vous proposera la solution la plus adaptée.
       </p>
       <LeadRequestForm school={school} selectedFormula={selectedFormula} />
-      <Link to={nearbySchoolsUrl(school)} className="btn-secondary mt-5 justify-center">Voir les écoles Spotykite disponibles à proximité</Link>
     </section>
   );
 }
@@ -240,7 +239,7 @@ function LeadRequestForm({ school, selectedFormula, compact = false }) {
         En envoyant ce formulaire, vous acceptez d’être recontacté par Spotykite au sujet de votre demande.
       </p>
       {status === 'error' && <p className={`text-sm font-black text-red-600 ${compact ? '' : 'sm:col-span-2'}`}>Erreur lors de l’envoi. Réessayez dans quelques instants.</p>}
-      <button className={`btn-primary justify-center disabled:opacity-60 ${compact ? 'w-full' : 'sm:col-span-2 sm:w-fit'}`} disabled={!canSubmit || status === 'loading'} type="submit">Être rappelé</button>
+      <button className={`btn-primary justify-center disabled:opacity-60 ${compact ? 'w-full' : 'sm:col-span-2 sm:w-fit'}`} disabled={!canSubmit || status === 'loading'} type="submit">Recevoir les disponibilités</button>
     </form>
   );
 }
@@ -259,13 +258,13 @@ function SchoolHero({ school, selectedFormula, canBook }) {
           <h1 className="mt-5 max-w-4xl text-5xl font-black uppercase leading-none text-white sm:text-7xl lg:hidden">{mobileTitle}</h1>
           <h1 className="mt-5 hidden max-w-4xl text-5xl font-black leading-none text-white sm:text-7xl lg:block">École de kitesurf à {school.city}</h1>
           <p className="mt-4 text-3xl font-black text-turquoise lg:hidden">À partir de {mobilePrice ? `${mobilePrice} €` : 'sur demande'}</p>
-          <p className="mt-4 hidden max-w-3xl text-2xl font-black leading-tight text-white sm:text-3xl lg:block">{school.name}</p>
-          <p className="mt-4 flex items-center gap-2 text-lg font-bold text-white/85"><MapPin size={20} /> {school.city} • {school.region}</p>
+          <p className="mt-4 hidden max-w-3xl text-2xl font-black leading-tight text-white sm:text-3xl lg:block">{school.spot || `Spot de ${school.city}`}</p>
+          <p className="mt-4 flex items-center gap-2 text-lg font-bold text-white/85"><MapPin size={20} /> {publicSchoolLocation(school)}</p>
           {canBook ? <div className="mt-7 lg:hidden">
             <Link to={reservationUrl(school, selectedFormula)} className="btn-primary w-full justify-center sm:w-fit">Réserver cette formule</Link>
           </div> : (
             <div className="mt-7 lg:hidden">
-              <Link to={nearbySchoolsUrl(school)} className="btn-primary w-full justify-center sm:w-fit">Voir les écoles disponibles</Link>
+              <a href="#availability-request" className="btn-primary w-full justify-center sm:w-fit">Recevoir les disponibilités</a>
             </div>
           )}
           {canBook ? <div className="mt-7 hidden flex-wrap gap-3 lg:flex">
@@ -275,7 +274,7 @@ function SchoolHero({ school, selectedFormula, canBook }) {
             </Link>
           </div> : (
             <div className="mt-7 hidden lg:flex">
-              <Link to={nearbySchoolsUrl(school)} className="btn-primary justify-center">Voir les écoles Spotykite disponibles à proximité</Link>
+              <a href="#availability-request" className="btn-primary justify-center">Recevoir les disponibilités</a>
             </div>
           )}
         </div>
@@ -372,13 +371,13 @@ function FormulaSection({ school, selectedFormulaId, onReserve, canBook }) {
                 <span className="lg:hidden">Choisir cette formule</span>
                 <span className="hidden lg:inline">Réserver</span>
               </button> : (
-                <p className="mt-5 rounded-2xl border border-border bg-bg p-4 text-sm font-bold text-muted">Cette formule n’est pas réservable en ligne actuellement.</p>
+                <p className="mt-5 rounded-2xl border border-border bg-bg p-4 text-sm font-bold text-muted">Demandez vos disponibilités pour cette formule et notre équipe vous accompagne.</p>
               )}
             </article>
           ))}
         </div>
       ) : (
-        <Empty title="Aucune formule disponible" text="Cette école n’a pas encore publié de formule active." />
+        <Empty title="Formules en préparation" text="Indiquez vos disponibilités et Spotykite vous orientera vers la formule la plus adaptée." />
       )}
     </section>
   );
@@ -459,7 +458,7 @@ function LocationSection({ school }) {
         <p className="eyebrow">Localisation</p>
         <h2 className="text-4xl font-black text-navy">Où se situe l’école ?</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <InfoRow label="École" value={school.name} />
+          <InfoRow label="Spot" value={school.spot || school.city} />
           {school.spot && <InfoRow label="Spot principal" value={school.spot} />}
           {school.practical?.parking && <InfoRow label="Parking" value="Disponible sur place ou à proximité" />}
         </div>
@@ -482,7 +481,7 @@ function LocationSection({ school }) {
               <span className="spotykite-map-marker"><MapPin size={22} className="fill-current" /></span>
             </Marker>
             <Popup longitude={Number(school.longitude)} latitude={Number(school.latitude)} anchor="top" closeButton={false}>
-              <b>{school.name}</b>
+              <b>{publicSchoolTitle(school)}</b>
             </Popup>
           </Map>
         </div>
@@ -571,14 +570,14 @@ function NearbySchools({ schools }) {
     <section>
       <div className="mb-5">
         <p className="eyebrow">À proximité</p>
-        <h2 className="text-4xl font-black text-navy">Autres écoles proches</h2>
+        <h2 className="text-4xl font-black text-navy">Autres spots proches</h2>
       </div>
       {schools.length ? (
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
           {schools.map((nearby) => <SchoolCard key={nearby.id} school={nearby} />)}
         </div>
       ) : (
-        <Empty title="Aucune école proche" text="Aucune autre école référencée par Spotykite n’est disponible dans cette zone pour le moment." />
+        <Empty title="Aucun spot proche" text="Notre équipe peut vous orienter vers les meilleures options selon vos dates et votre niveau." />
       )}
     </section>
   );
@@ -587,14 +586,14 @@ function NearbySchools({ schools }) {
 function SchoolFaq({ school, canBook }) {
   const practical = school.practical || {};
   const items = [
-    ['Puis-je débuter ?', `Oui, ${school.name} propose des formules adaptées aux débutants selon les conditions du spot de ${school.city}.`],
+    ['Puis-je débuter ?', `Oui, des formules adaptées aux débutants sont proposées selon les conditions du spot de ${school.city}.`],
     ['Que se passe-t-il en cas de mauvais temps ?', 'La session est confirmée selon le vent, la météo et la sécurité. Si les conditions ne sont pas adaptées, un report est proposé.'],
     ['Le matériel est-il fourni ?', practical.equipmentIncluded ? 'Oui, le matériel de kitesurf est fourni par l’école.' : 'Le détail du matériel fourni est précisé lors de la réservation.'],
     ['Faut-il savoir nager ?', 'Oui, il faut savoir nager pour pratiquer une activité nautique en sécurité.'],
     canBook && ['Puis-je offrir cette formule ?', 'Oui, la carte cadeau Spotykite est utilisable dans les écoles Spotykite pendant 1 an.'],
     canBook
       ? ['Comment réserver ?', 'Choisissez une formule, renseignez vos informations et envoyez votre demande de réservation via Spotykite.']
-      : ['Cette école est-elle réservable en ligne ?', 'Pas encore. Consultez les écoles Spotykite disponibles à proximité pour réserver en ligne.']
+      : ['Comment recevoir les disponibilités ?', 'Indiquez vos coordonnées et vos préférences. Spotykite vous proposera la solution la plus adaptée pour ce spot.']
   ].filter(Boolean);
   return (
     <section className="card p-6 sm:p-8">
@@ -615,10 +614,10 @@ function SchoolFaq({ school, canBook }) {
 function FinalCta({ school, selectedFormula, canBook }) {
   return (
     <section className="rounded-[2rem] bg-navy p-7 text-white sm:p-10">
-      <h2 className="text-5xl font-black leading-none text-white">{canBook ? `Prêt à découvrir le kitesurf à ${school.city} ?` : `Découvrez les écoles Spotykite disponibles autour de ${school.city}`}</h2>
-      <p className="mt-4 max-w-2xl text-white/80">{canBook ? 'Choisissez votre formule et réservez votre session dans une école sélectionnée par Spotykite.' : 'Cette école n’est pas encore réservable en ligne. Consultez les écoles disponibles autour de ce spot.'}</p>
+      <h2 className="text-5xl font-black leading-none text-white">{canBook ? `Prêt à découvrir le kitesurf à ${school.city} ?` : `Préparez votre stage à ${school.city}`}</h2>
+      <p className="mt-4 max-w-2xl text-white/80">{canBook ? 'Choisissez votre formule et réservez votre session avec Spotykite.' : 'Indiquez vos disponibilités et notre équipe vous proposera la solution la plus adaptée sur ce spot.'}</p>
       <div className="mt-6 flex flex-wrap gap-3">
-        {canBook ? <Link to={reservationUrl(school, selectedFormula)} className="btn-primary justify-center lg:hidden">Réserver un stage</Link> : <Link to={nearbySchoolsUrl(school)} className="btn-primary justify-center">Voir les écoles disponibles</Link>}
+        {canBook ? <Link to={reservationUrl(school, selectedFormula)} className="btn-primary justify-center lg:hidden">Réserver un stage</Link> : <a href="#availability-request" className="btn-primary justify-center">Recevoir les disponibilités</a>}
         {canBook && <a href="#reservation" className="btn-primary hidden justify-center lg:inline-flex">Réserver un stage</a>}
         <Link to="/carte-cadeau" className="btn-secondary justify-center">Offrir un stage</Link>
       </div>
@@ -646,7 +645,7 @@ function SchoolJsonLd({ school }) {
   const data = {
     '@context': 'https://schema.org',
     '@type': 'LocalBusiness',
-    name: school.name,
+    name: publicSchoolTitle(school),
     address: school.address,
     telephone: school.phone,
     email: school.email,
@@ -662,8 +661,8 @@ function SchoolJsonLd({ school }) {
 
 function updateSeo(school) {
   if (typeof document === 'undefined') return;
-  document.title = `Stage de kitesurf à ${school.city} | ${school.name} | Spotykite`;
-  const description = `Découvrez les formules proposées par ${school.name}, école référencée par Spotykite à ${school.city}. Réservez votre stage de kitesurf en ligne.`;
+  document.title = `Stage de kitesurf à ${school.city} | Spotykite`;
+  const description = `Découvrez les formules de kitesurf disponibles à ${school.city}. Spotykite vous accompagne pour réserver votre stage en ligne.`;
   let meta = document.querySelector('meta[name="description"]');
   if (!meta) {
     meta = document.createElement('meta');
@@ -728,9 +727,10 @@ function rememberViewedSchool(school) {
   const item = {
     id: school.id,
     slug: school.slug,
-    name: school.name,
+    name: publicSchoolTitle(school),
     city: school.city,
     region: school.region,
+    spot: school.spot,
     startingPrice: school.startingPrice
   };
   const current = readLocalArray('recentlyViewedSchools');
@@ -743,7 +743,7 @@ function rememberCurrentBooking(school, formula) {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem('currentBooking', JSON.stringify({
     schoolId: school.id,
-    schoolName: school.name,
+    schoolName: publicSchoolTitle(school),
     formulaId: formula.id,
     formulaName: formula.name,
     price: formula.price,

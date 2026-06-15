@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CalendarCheck, Search, ShieldAlert, Waves } from 'lucide-react';
 import { api } from '../api.js';
+import { publicSchoolMapLabel } from '../utils/schoolDisplay.js';
 
 export default function RedeemGiftCard() {
   const [schools, setSchools] = useState([]);
@@ -110,16 +111,16 @@ export default function RedeemGiftCard() {
 
                 <form onSubmit={redeem} className="rounded-3xl border border-border bg-white p-6 shadow-lift">
                   <h2 className="flex items-center gap-2 text-2xl font-black"><CalendarCheck /> Réserver ma session</h2>
-                  <p className="mt-2 text-sm text-muted">Choisissez la région, l’école Spotykite et la date. L’école confirmera ensuite la session selon les conditions météo.</p>
+                  <p className="mt-2 text-sm text-muted">Choisissez la région, le spot et la date. Spotykite confirme ensuite la session selon les conditions météo.</p>
                   <div className="mt-5 grid gap-3 sm:grid-cols-2">
                     <label className="grid gap-1 text-sm font-bold">Choix de la région
                       <select className="field" value={booking.region} onChange={(event) => setBooking({ ...booking, region: event.target.value })}>
                         {[...new Set(schools.map((school) => school.region))].map((region) => <option key={region}>{region}</option>)}
                       </select>
                     </label>
-                    <label className="grid gap-1 text-sm font-bold">Choix de l’école
+                    <label className="grid gap-1 text-sm font-bold">Choix du spot
                       <select className="field" value={booking.schoolId} onChange={(event) => setBooking({ ...booking, schoolId: event.target.value })}>
-                        {filteredSchools.map((school) => <option key={school.id} value={school.id}>{school.name} · {school.spot}</option>)}
+                        {filteredSchools.map((school) => <option key={school.id} value={school.id}>{publicSchoolMapLabel(school)}</option>)}
                       </select>
                     </label>
                     <label className="grid gap-1 text-sm font-bold">Choix de la date

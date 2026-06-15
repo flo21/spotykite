@@ -63,7 +63,7 @@ export default function Listings({ seoType = null }) {
           <p className="eyebrow text-primary">Écoles Spotykite</p>
           <h1 className="max-w-4xl text-4xl font-black sm:text-6xl">{title}</h1>
           <p className="mt-4 max-w-3xl text-muted">
-            Réservez une formule dans une école référencée par Spotykite. Les résultats affichent les écoles disponibles, avec le prix à partir de la formule la moins chère.
+            Trouvez votre spot et choisissez une formule Spotykite. Les résultats affichent les stages disponibles, avec le prix à partir de la formule la moins chère.
           </p>
         </div>
       </section>

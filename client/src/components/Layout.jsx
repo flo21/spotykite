@@ -2,6 +2,7 @@ import { Link, NavLink, Outlet } from 'react-router-dom';
 import { CalendarCheck, ChevronDown, MapPin, Menu, Phone, ShoppingBag, User, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
+import { publicSchoolLocation, publicSchoolTitle } from '../utils/schoolDisplay.js';
 
 const levelItems = [
   ['Débutant', 'debutant'],
@@ -231,7 +232,7 @@ function MobileCartDrawer({ currentBooking, recentlyViewedSchools, onClose }) {
           <h2 className="text-xs font-black uppercase tracking-[0.18em] text-muted">Commande en cours</h2>
           {currentBooking ? (
             <div className="mt-3 rounded-2xl border border-border bg-bg p-4">
-              <p className="font-black text-navy">{currentBooking.schoolName || 'École Spotykite'}</p>
+              <p className="font-black text-navy">{currentBooking.schoolName || 'Stage Spotykite'}</p>
               <p className="mt-1 text-sm font-bold text-ocean">{currentBooking.formulaName || 'Formule sélectionnée'}</p>
               <p className="mt-1 text-sm font-black text-navy">{currentBooking.price ? `${currentBooking.price} €` : 'Prix sur demande'}</p>
               <Link to={currentBooking.reservationUrl || '/reservation'} onClick={onClose} className="btn-primary mt-3 w-full justify-center text-sm">
@@ -250,8 +251,8 @@ function MobileCartDrawer({ currentBooking, recentlyViewedSchools, onClose }) {
               {recentlyViewedSchools.map((school) => (
                 <div key={school.id || school.slug} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-2xl border border-border bg-bg p-4">
                   <div className="min-w-0">
-                    <p className="truncate font-black text-navy">{school.name}</p>
-                    <p className="truncate text-sm font-bold text-ocean">{[school.city, school.region].filter(Boolean).join(' / ')}</p>
+                    <p className="truncate font-black text-navy">{publicSchoolTitle(school)}</p>
+                    <p className="truncate text-sm font-bold text-ocean">{publicSchoolLocation(school).replace(' · ', ' / ')}</p>
                     <p className="mt-1 text-sm font-black text-navy">{school.startingPrice ? `À partir de ${school.startingPrice} €` : 'Prix sur demande'}</p>
                   </div>
                   <Link to={`/ecole-kitesurf/${school.slug}`} onClick={onClose} className="rounded-full border border-turquoise/45 bg-white px-4 py-2 text-sm font-black text-ocean">

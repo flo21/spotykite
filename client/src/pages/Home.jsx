@@ -10,6 +10,7 @@ import stageFiveDaysImage from '../assets/stage-5-jours-kitesurf.png';
 import privateLessonImage from '../assets/cours-particulier-kitesurf.png';
 import improvementImage from '../assets/perfectionnement-kitesurf.png';
 import { api } from '../api.js';
+import { publicSchoolLocation, publicSchoolTitle } from '../utils/schoolDisplay.js';
 
 const departments = ['Tous les départements', 'Charente-Maritime', 'Finistère', 'Hérault', 'Bouches-du-Rhône'];
 const franceView = { longitude: 2.2137, latitude: 46.2276, zoom: 5.2 };
@@ -492,7 +493,7 @@ function MapboxSchoolsMap({ schools, selectedRegion, selectedSchool, onSchoolSel
                 event.preventDefault();
                 onSchoolSelect(school);
               }}
-              aria-label={`Afficher ${school.name}`}
+              aria-label={`Afficher ${publicSchoolTitle(school)}`}
             >
               <MapPin size={22} className="fill-current" />
             </button>
@@ -510,8 +511,8 @@ function MapboxSchoolsMap({ schools, selectedRegion, selectedSchool, onSchoolSel
             className="spotykite-map-popup"
           >
             <div className="min-w-[220px] text-text">
-              <h3 className="text-xl font-black leading-tight text-navy">{selectedSchool.name}</h3>
-              <p className="mt-1 text-sm font-bold text-ocean">{selectedSchool.city} · {selectedSchool.region}</p>
+              <h3 className="text-xl font-black leading-tight text-navy">{publicSchoolTitle(selectedSchool)}</h3>
+              <p className="mt-1 text-sm font-bold text-ocean">{publicSchoolLocation(selectedSchool)}</p>
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                 <div className="rounded-xl bg-sky/60 p-2">
                   <p className="text-[10px] font-black uppercase text-muted">À partir de</p>
@@ -523,7 +524,7 @@ function MapboxSchoolsMap({ schools, selectedRegion, selectedSchool, onSchoolSel
                 </div>
               </div>
               <Link to={`/ecole-kitesurf/${selectedSchool.slug}`} className="mt-3 inline-flex w-full justify-center rounded-xl bg-primary px-4 py-2 text-sm font-black text-navy transition hover:bg-primaryHover">
-                Voir l'école
+                Voir le spot
               </Link>
             </div>
           </Popup>
