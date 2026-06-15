@@ -157,24 +157,23 @@ function DesktopActionCard({ school, formulas, selectedFormula, selectedFormulaI
 }
 
 function MobileActionBar({ school, formulas, selectedFormula, selectedFormulaId, onSelectFormula, canBook, open, onOpen, onClose }) {
-  const label = canBook ? 'Réserver mon stage' : 'Recevoir les disponibilités';
+  const label = canBook ? `Réservez votre stage à ${school.city}` : publicSchoolLocation(school);
   return (
     <>
-      <div className="fixed inset-x-0 bottom-0 z-[9998] border-t border-turquoise/45 bg-[#062B4A]/95 px-4 py-3 text-white shadow-[0_-18px_44px_rgba(6,43,74,0.28)] backdrop-blur-[10px] sm:px-6 lg:hidden">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="fixed inset-x-0 bottom-0 z-[9998] border-t border-turquoise/45 bg-[#062B4A]/95 px-3 py-2 text-left text-white shadow-[0_-18px_44px_rgba(6,43,74,0.28)] backdrop-blur-[10px] sm:px-5 lg:hidden"
+      >
+        <div className="mx-auto flex min-h-12 max-w-7xl items-center gap-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-black uppercase leading-tight sm:text-base">{canBook ? heroFormulaTitle(selectedFormula) : 'Préparez votre stage'}</p>
-            <p className="truncate text-xs font-bold text-white/75">
-              {canBook
-                ? selectedFormula?.price ? `${selectedFormula.price} €` : school.startingPrice ? `${school.startingPrice} €` : 'Sur demande'
-                : publicSchoolLocation(school)}
-            </p>
+            <p className="truncate text-sm font-black leading-none sm:text-base">{label}</p>
           </div>
-          <button type="button" onClick={onOpen} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full bg-turquoise px-5 py-2 text-sm font-black text-navy transition hover:bg-primary">
-            {label}
-          </button>
+          <span className="ml-auto inline-flex h-10 w-[68px] shrink-0 items-center justify-center rounded-full bg-turquoise text-sm font-black uppercase text-navy shadow-[0_8px_20px_rgba(45,212,191,0.25)]">
+            GO
+          </span>
         </div>
-      </div>
+      </button>
 
       {open && (
         <div className="fixed inset-0 z-[10000] lg:hidden" role="dialog" aria-modal="true">
