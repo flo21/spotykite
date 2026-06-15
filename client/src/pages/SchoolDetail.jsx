@@ -88,27 +88,27 @@ export default function SchoolDetail() {
   return (
     <main className="page-with-mobile-sticky-booking">
       <SchoolJsonLd school={school} />
-      <SchoolHero school={school} selectedFormula={selectedFormula} canBook={canBook} />
+      <SchoolHero school={school} selectedFormula={selectedFormula} />
+      <SchoolAnchorNav />
 
       <section className="section">
-        <div className="grid gap-8 lg:grid-cols-[1fr_390px]">
-          <div className="grid gap-8">
+        <div className="mx-auto grid max-w-6xl gap-8">
+          <StageSection>
             <StageBrief />
-            <SchoolWelcome school={school} />
             <BeforeBooking school={school} />
             <IncludedSection school={school} selectedFormula={selectedFormula} />
             <FormulaSection school={school} selectedFormulaId={selectedFormulaId} onReserve={reserveFormula} canBook={canBook} />
+            {canBook && <InlineBookingCta school={school} selectedFormula={selectedFormula} />}
             {!canBook && <UnavailableBookingCta school={school} selectedFormula={selectedFormula} />}
-            <LocationSection school={school} />
-            <AccommodationsSection accommodations={school.accommodations || []} />
-            {canBook && <GiftCardConversion />}
-            {canBook && <WhyBookSpotykite />}
-            <NearbySchools schools={school.nearbySchools || []} />
-            <SchoolFaq school={school} canBook={canBook} />
-            <FinalCta school={school} selectedFormula={selectedFormula} canBook={canBook} />
-          </div>
-
-          {canBook ? <BookingSummary school={school} selectedFormula={selectedFormula} /> : <UnavailableBookingAside school={school} selectedFormula={selectedFormula} />}
+          </StageSection>
+          <SchoolWelcome school={school} />
+          <LocationSection school={school} />
+          <AccommodationsSection accommodations={school.accommodations || []} />
+          {canBook && <GiftCardConversion />}
+          {canBook && <WhyBookSpotykite />}
+          <NearbySchools schools={school.nearbySchools || []} />
+          <SchoolFaq school={school} canBook={canBook} />
+          <FinalCta school={school} selectedFormula={selectedFormula} canBook={canBook} />
         </div>
       </section>
 
@@ -126,64 +126,6 @@ export default function SchoolDetail() {
         </div>
       </div>}
     </main>
-  );
-}
-
-function BookingSummary({ school, selectedFormula }) {
-  const practical = school.practical || {};
-  const rows = [
-    ['Spot', school.spot || school.city],
-    ['Formule', selectedFormula?.name || 'À sélectionner'],
-    ['À partir de', selectedFormula?.price ? `${selectedFormula.price} €` : school.startingPrice ? `${school.startingPrice} €` : 'Sur demande'],
-    ['Durée', selectedFormula?.duration],
-    ['Niveau', selectedFormula?.level],
-    ['Participants', practical.maxParticipants ? `${practical.maxParticipants} personnes maximum` : 'Selon formule']
-  ].filter(([, value]) => value);
-  const reassurance = [
-    'Paiement sécurisé',
-    'Report météo possible',
-    'Carte cadeau valable 1 an',
-    'École sélectionnée par Spotykite'
-  ];
-
-  return (
-    <aside id="reservation" className="booking-sidebar hidden h-fit rounded-3xl border border-border bg-white p-6 shadow-lift lg:block">
-      <h2 className="text-2xl font-black uppercase text-navy">Réserver avec Spotykite</h2>
-      <div className="mt-5 divide-y divide-border rounded-2xl border border-border bg-bg">
-        {rows.map(([label, value]) => (
-          <div key={label} className="grid grid-cols-[112px_1fr] gap-3 px-4 py-3 text-sm">
-            <p className="font-black text-muted">{label} :</p>
-            <p className="font-black text-navy">{value}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-5 grid gap-3">
-        <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
-          Réserver
-        </Link>
-        <Link to="/carte-cadeau" className="btn-secondary justify-center"><Gift size={18} /> Offrir</Link>
-      </div>
-      <div className="mt-5 grid gap-2 rounded-2xl border border-turquoise/25 bg-sky/40 p-4">
-        {reassurance.map((item) => (
-          <p key={item} className="flex items-center gap-2 text-sm font-black text-navy">
-            <CheckCircle2 size={17} className="shrink-0 text-turquoise" />
-            {item}
-          </p>
-        ))}
-      </div>
-    </aside>
-  );
-}
-
-function UnavailableBookingAside({ school, selectedFormula }) {
-  return (
-    <aside className="hidden h-fit rounded-3xl border border-border bg-white p-6 shadow-lift lg:block">
-      <h2 className="text-2xl font-black text-navy">Préparez votre stage</h2>
-      <p className="mt-3 text-sm font-bold leading-relaxed text-muted">
-        Nous sélectionnons pour vous les meilleures disponibilités sur ce spot. Faites votre demande et notre équipe vous proposera la solution la plus adaptée.
-      </p>
-      <LeadRequestForm school={school} selectedFormula={selectedFormula} compact />
-    </aside>
   );
 }
 
@@ -244,49 +186,71 @@ function LeadRequestForm({ school, selectedFormula, compact = false }) {
   );
 }
 
-function SchoolHero({ school, selectedFormula, canBook }) {
+function SchoolHero({ school, selectedFormula }) {
   const heroImage = school.photos?.[0] || school.imageUrl;
-  const mobileTitle = heroFormulaTitle(selectedFormula);
-  const mobilePrice = selectedFormula?.price || school.startingPrice;
+  const activity = heroFormulaTitle(selectedFormula);
+  const title = (school.city || school.spot || 'Spotykite').toUpperCase();
+  const breadcrumbs = ['Accueil', 'France', school.region, school.city].filter(Boolean);
   return (
-    <section id="school-hero" className="relative overflow-hidden bg-navy text-white">
-      <img src={heroImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />
-      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(6,43,73,0.94),rgba(6,43,73,0.68),rgba(6,43,73,0.18))]" />
-      <div className="relative mx-auto grid min-h-[520px] max-w-7xl content-end gap-8 px-4 py-10 sm:px-6 lg:min-h-[560px] lg:grid-cols-[1fr_360px] lg:py-16">
-        <div>
-          <span className="inline-flex rounded-full bg-primary px-4 py-2 text-sm font-black uppercase text-navy">École Spotykite</span>
-          <h1 className="mt-5 max-w-4xl text-5xl font-black uppercase leading-none text-white sm:text-7xl lg:hidden">{mobileTitle}</h1>
-          <h1 className="mt-5 hidden max-w-4xl text-5xl font-black leading-none text-white sm:text-7xl lg:block">École de kitesurf à {school.city}</h1>
-          <p className="mt-4 text-3xl font-black text-turquoise lg:hidden">À partir de {mobilePrice ? `${mobilePrice} €` : 'sur demande'}</p>
-          <p className="mt-4 hidden max-w-3xl text-2xl font-black leading-tight text-white sm:text-3xl lg:block">{school.spot || `Spot de ${school.city}`}</p>
-          <p className="mt-4 flex items-center gap-2 text-lg font-bold text-white/85"><MapPin size={20} /> {publicSchoolLocation(school)}</p>
-          {canBook ? <div className="mt-7 lg:hidden">
-            <Link to={reservationUrl(school, selectedFormula)} className="btn-primary w-full justify-center sm:w-fit">Réserver cette formule</Link>
-          </div> : (
-            <div className="mt-7 lg:hidden">
-              <a href="#availability-request" className="btn-primary w-full justify-center sm:w-fit">Recevoir les disponibilités</a>
-            </div>
-          )}
-          {canBook ? <div className="mt-7 hidden flex-wrap gap-3 lg:flex">
-            <a href="#reservation" className="btn-primary justify-center">Réserver un stage</a>
-            <Link to="/carte-cadeau" className="inline-flex min-h-12 items-center gap-2 rounded-2xl border border-white/45 bg-white/10 px-5 py-3 font-black text-white transition hover:border-primary hover:text-primary">
-              <Gift size={18} /> Offrir un stage
-            </Link>
-          </div> : (
-            <div className="mt-7 hidden lg:flex">
-              <a href="#availability-request" className="btn-primary justify-center">Recevoir les disponibilités</a>
-            </div>
-          )}
-        </div>
-        <div className="hidden gap-3 rounded-3xl border border-white/20 bg-white/12 p-5 backdrop-blur lg:grid">
-          <Metric label="À partir de" value={school.startingPrice ? `${school.startingPrice} €` : 'Sur demande'} />
-          <Metric label="Nombre de formules" value={`${school.activeFormulas || school.formulas?.length || 0}`} />
-          <Metric label="Ville" value={school.city} />
-          <Metric label="Région" value={school.region} />
+    <section id="school-hero" className="relative min-h-[520px] overflow-hidden bg-navy text-white sm:min-h-[620px]">
+      <img src={heroImage} alt="" className="absolute inset-0 h-full w-full object-cover" />
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(6,43,73,0.20),rgba(6,43,73,0.62)_44%,rgba(6,43,73,0.94))]" />
+      <div className="relative mx-auto flex min-h-[520px] max-w-7xl flex-col justify-end px-4 pb-10 pt-28 sm:min-h-[620px] sm:px-6 lg:pb-14">
+        <div className="grid gap-6 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <p className="inline-flex rounded-full border border-white/35 bg-white/15 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white backdrop-blur">
+              {activity}
+            </p>
+            <h1 className="mt-4 max-w-5xl text-5xl font-black uppercase leading-[0.88] text-white sm:text-7xl lg:text-8xl">
+              {title}
+            </h1>
+            <p className="mt-5 flex items-center gap-2 text-lg font-black text-white/90 sm:text-2xl">
+              <MapPin size={22} className="text-turquoise" /> {publicSchoolLocation(school)}
+            </p>
+          </div>
+          <nav className="flex flex-wrap gap-2 text-sm font-black text-white/82 lg:max-w-md lg:justify-end" aria-label="Fil d’Ariane">
+            {breadcrumbs.map((item, index) => (
+              <span key={`${item}-${index}`} className="inline-flex items-center gap-2">
+                {index === 0 ? <Link to="/" className="transition hover:text-primary">{item}</Link> : <span>{item}</span>}
+                {index < breadcrumbs.length - 1 && <span className="text-primary">›</span>}
+              </span>
+            ))}
+          </nav>
         </div>
       </div>
     </section>
   );
+}
+
+function SchoolAnchorNav() {
+  const tabs = [
+    ['#stage-kitesurf', 'Stage de kitesurf'],
+    ['#spot', 'Le spot'],
+    ['#carte', 'Voir sur la carte'],
+    ['#proche', 'Proche de ce spot'],
+    ['#faq', 'FAQ']
+  ];
+  const [active, setActive] = useState(tabs[0][0]);
+  return (
+    <nav className="sticky top-0 z-30 border-b border-border bg-white/95 shadow-sm backdrop-blur" aria-label="Navigation fiche spot">
+      <div className="mx-auto flex max-w-7xl gap-7 overflow-x-auto px-4 sm:px-6">
+        {tabs.map(([href, label]) => (
+          <a
+            key={href}
+            href={href}
+            onClick={() => setActive(href)}
+            className={`min-h-14 shrink-0 border-b-4 px-1 pt-5 text-sm font-black text-navy transition hover:text-ocean ${active === href ? 'border-primary text-ocean' : 'border-transparent'}`}
+          >
+            {label}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function StageSection({ children }) {
+  return <section id="stage-kitesurf" className="scroll-mt-24 grid gap-8">{children}</section>;
 }
 
 function StageBrief() {
@@ -322,7 +286,7 @@ function StageBrief() {
 
 function SchoolWelcome({ school }) {
   const practical = school.practical || {};
-  const description = school.description || `Située à ${school.city}, cette école sélectionnée par Spotykite vous accueille sur un spot réputé pour ses conditions adaptées à l’apprentissage du kitesurf.`;
+  const description = school.description || `À ${school.city}, Spotykite vous oriente vers un spot réputé pour ses conditions adaptées à l’apprentissage du kitesurf.`;
   const details = [
     ['Présentation', description],
     ['Philosophie pédagogique', 'Un apprentissage progressif, centré sur la sécurité, la compréhension du vent et les premières sensations sur l’eau.'],
@@ -333,9 +297,9 @@ function SchoolWelcome({ school }) {
   ].filter(Boolean);
 
   return (
-    <section className="card p-6 sm:p-8">
-      <p className="eyebrow">L’école vous accueille</p>
-      <h2 className="text-4xl font-black text-navy">Votre école de kitesurf à {school.city}</h2>
+    <section id="spot" className="card scroll-mt-24 p-6 sm:p-8">
+      <p className="eyebrow">Le spot</p>
+      <h2 className="text-4xl font-black text-navy">Le spot de kitesurf à {school.city}</h2>
       <div className="mt-5 grid gap-3">
         {details.map(([label, value]) => <InfoRow key={label} label={label} value={value} />)}
       </div>
@@ -379,6 +343,23 @@ function FormulaSection({ school, selectedFormulaId, onReserve, canBook }) {
       ) : (
         <Empty title="Formules en préparation" text="Indiquez vos disponibilités et Spotykite vous orientera vers la formule la plus adaptée." />
       )}
+    </section>
+  );
+}
+
+function InlineBookingCta({ school, selectedFormula }) {
+  return (
+    <section id="reservation" className="rounded-[2rem] border border-turquoise/25 bg-sky/50 p-6 sm:p-8">
+      <h2 className="text-3xl font-black text-navy">Préparez votre stage</h2>
+      <p className="mt-3 max-w-2xl text-sm font-bold text-muted">
+        Choisissez votre formule et finalisez votre demande avec Spotykite.
+      </p>
+      <div className="mt-5 flex flex-wrap gap-3">
+        <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
+          Réserver cette formule
+        </Link>
+        <Link to="/carte-cadeau" className="btn-secondary justify-center"><Gift size={18} /> Offrir un stage</Link>
+      </div>
     </section>
   );
 }
@@ -453,7 +434,7 @@ function LocationSection({ school }) {
     school.travelTimeFromMarseille && ['Marseille', school.travelTimeFromMarseille]
   ].filter(Boolean);
   return (
-    <section className="card overflow-hidden p-0">
+    <section id="carte" className="card scroll-mt-24 overflow-hidden p-0">
       <div className="p-6 sm:p-8">
         <p className="eyebrow">Localisation</p>
         <h2 className="text-4xl font-black text-navy">Où se situe l’école ?</h2>
@@ -567,7 +548,7 @@ function WhyBookSpotykite() {
 
 function NearbySchools({ schools }) {
   return (
-    <section>
+    <section id="proche" className="scroll-mt-24">
       <div className="mb-5">
         <p className="eyebrow">À proximité</p>
         <h2 className="text-4xl font-black text-navy">Autres spots proches</h2>
@@ -596,7 +577,7 @@ function SchoolFaq({ school, canBook }) {
       : ['Comment recevoir les disponibilités ?', 'Indiquez vos coordonnées et vos préférences. Spotykite vous proposera la solution la plus adaptée pour ce spot.']
   ].filter(Boolean);
   return (
-    <section className="card p-6 sm:p-8">
+    <section id="faq" className="card scroll-mt-24 p-6 sm:p-8">
       <p className="eyebrow">FAQ</p>
       <h2 className="text-4xl font-black text-navy">Questions fréquentes</h2>
       <div className="mt-5 grid gap-3">
@@ -623,10 +604,6 @@ function FinalCta({ school, selectedFormula, canBook }) {
       </div>
     </section>
   );
-}
-
-function Metric({ label, value }) {
-  return <div className="rounded-2xl bg-white/12 p-4"><p className="text-xs font-black uppercase text-white/58">{label}</p><p className="mt-1 text-2xl font-black text-white">{value}</p></div>;
 }
 
 function Pill({ icon, title, text }) {
