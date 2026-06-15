@@ -58,6 +58,7 @@ const blankSchoolPartner = {
   city: '',
   department: '',
   region: '',
+  spot: '',
   address: '',
   latitude: '',
   longitude: '',
@@ -126,6 +127,14 @@ const blankSchoolStages = Object.fromEntries(schoolStageDefinitions.map((stage) 
 
 blankSchoolPartner.schoolFormulas = blankSchoolStages;
 
+function newSchoolPartnerForm() {
+  return {
+    ...blankSchoolPartner,
+    acceptedLevels: [],
+    schoolFormulas: mergeSchoolStages()
+  };
+}
+
 const tabs = [
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['contents', 'Contenus du site', FileText],
@@ -158,7 +167,7 @@ export default function Admin() {
   const [notice, setNotice] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [partnerForm, setPartnerForm] = useState(blankPartner);
-  const [schoolPartnerForm, setSchoolPartnerForm] = useState(blankSchoolPartner);
+  const [schoolPartnerForm, setSchoolPartnerForm] = useState(newSchoolPartnerForm);
   const [createdSchoolPartner, setCreatedSchoolPartner] = useState(null);
   const [editingPartnerId, setEditingPartnerId] = useState(null);
 
@@ -280,7 +289,7 @@ export default function Admin() {
       region: schoolPartnerForm.region,
       department: schoolPartnerForm.department,
       city: schoolPartnerForm.city,
-      spot: schoolPartnerForm.city,
+      spot: schoolPartnerForm.spot || schoolPartnerForm.city,
       address: schoolPartnerForm.address,
       latitude: schoolPartnerForm.latitude,
       longitude: schoolPartnerForm.longitude,
@@ -300,16 +309,26 @@ export default function Admin() {
       bookingEnabled: schoolPartnerForm.bookingEnabled,
       status: 'active'
     };
-    const saved = await persist(() => api.createSchool(payload), 'École créée avec succès');
+    const saved = await persist(
+      () => editingPartnerId ? api.updateSchool(editingPartnerId, payload) : api.createSchool(payload),
+      editingPartnerId ? 'École enregistrée avec succès' : 'École créée avec succès'
+    );
     if (!saved) return;
+    if (editingPartnerId) {
+      setSchoolPartnerForm(newSchoolPartnerForm());
+      setEditingPartnerId(null);
+      setTab('partners');
+      return;
+    }
     setCreatedSchoolPartner(normalizeAdminPartner(payload));
-    setSchoolPartnerForm(blankSchoolPartner);
+    setSchoolPartnerForm(newSchoolPartnerForm());
   }
 
   function editPartner(partner) {
-    setPartnerForm({ ...partner, schoolFormulas: formulasToSchoolFormulas(formulas.filter((formula) => String(formula.schoolId) === String(partner.id))) });
+    setSchoolPartnerForm(schoolToSchoolForm(partner, formulas.filter((formula) => String(formula.schoolId) === String(partner.id))));
     setEditingPartnerId(partner.id);
-    setTab('partners');
+    setCreatedSchoolPartner(null);
+    setTab('create-partner');
   }
 
   async function deletePartner(id) {
@@ -317,6 +336,7 @@ export default function Admin() {
     if (!deleted) return;
     if (editingPartnerId === id) {
       setPartnerForm(blankPartner);
+      setSchoolPartnerForm(newSchoolPartnerForm());
       setEditingPartnerId(null);
     }
   }
@@ -396,6 +416,13 @@ export default function Admin() {
               onSubmit={saveSchoolPartner}
               createdPartner={createdSchoolPartner}
               partners={partners}
+              editingId={editingPartnerId}
+              onCancel={() => {
+                setSchoolPartnerForm(newSchoolPartnerForm());
+                setEditingPartnerId(null);
+                setCreatedSchoolPartner(null);
+                setTab('partners');
+              }}
             />
           )}
           {tab === 'gifts' && <GiftCardsPage cards={adminGiftCards} />}
@@ -779,7 +806,7 @@ function OrderDetail({ order, onBack }) {
   );
 }
 
-function PartnersPage({ orders, partners, formulas, form, setForm, editingId, onSubmit, onEdit, onDelete, onCancel }) {
+function PartnersPage({ orders, partners, onEdit, onDelete }) {
   const [filters, setFilters] = useState({
     search: '',
     status: '',
@@ -827,10 +854,7 @@ function PartnersPage({ orders, partners, formulas, form, setForm, editingId, on
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
-      <Panel title={editingId ? 'Modifier une école' : 'Ajouter une école'}>
-        <PartnerForm form={form} setForm={setForm} editingId={editingId} formulas={formulas} onSubmit={onSubmit} onCancel={onCancel} />
-      </Panel>
+    <div className="grid gap-6">
       <Panel title="Écoles Spotykite">
         <FilterBar
           title="Filtres écoles"
@@ -889,7 +913,7 @@ function PartnersPage({ orders, partners, formulas, form, setForm, editingId, on
   );
 }
 
-function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners }) {
+function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners, editingId, onCancel }) {
   const nearbySchools = useMemo(() => {
     const lat = Number(form.latitude);
     const lng = Number(form.longitude);
@@ -934,6 +958,15 @@ function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners }
           École créée : {createdPartner.name}. La fiche école, le point carte et les référencements région/département sont prêts à être alimentés.
         </div>
       )}
+      {editingId && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-primary/30 bg-white p-4 shadow-lift">
+          <div>
+            <p className="eyebrow text-primary">Édition école</p>
+            <h2 className="text-2xl font-black text-navy">{form.name || 'École'}</h2>
+          </div>
+          <button type="button" onClick={onCancel} className="btn-secondary justify-center">Annuler</button>
+        </div>
+      )}
 
       <Panel title="Informations générales">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -941,6 +974,7 @@ function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners }
           <AdminInput required label="Ville *" value={form.city} onChange={(value) => update('city', value)} />
           <AdminInput required label="Département *" value={form.department} onChange={(value) => update('department', value)} />
           <AdminInput required label="Région *" value={form.region} onChange={(value) => update('region', value)} />
+          <AdminInput label="Spot principal" value={form.spot} onChange={(value) => update('spot', value)} />
           <AdminInput required label="Adresse complète *" value={form.address} onChange={(value) => update('address', value)} className="xl:col-span-2" />
           <AdminInput required label="Latitude *" type="number" value={form.latitude} onChange={(value) => update('latitude', value)} />
           <AdminInput required label="Longitude *" type="number" value={form.longitude} onChange={(value) => update('longitude', value)} />
@@ -956,6 +990,11 @@ function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners }
 
       <Panel title="Publication">
         <PublicationFields form={form} update={update} />
+        {(!form.latitude || !form.longitude) && (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-900">
+            Coordonnées GPS manquantes : l'école sera enregistrée, mais elle n'apparaîtra pas sur la carte tant que latitude et longitude ne seront pas renseignées.
+          </div>
+        )}
       </Panel>
 
       <Panel title="Médias">
@@ -1069,7 +1108,7 @@ function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners }
 
       <Panel title="Résultat généré">
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <Detail label="Fiche école" value={form.name ? 'Sera créée à la sauvegarde' : 'En attente'} />
+          <Detail label="Fiche école" value={form.name ? (editingId ? 'Sera mise à jour à la sauvegarde' : 'Sera créée à la sauvegarde') : 'En attente'} />
           <Detail label="Point carte" value={form.latitude && form.longitude ? 'Coordonnées prêtes' : 'Coordonnées requises'} />
           <Detail label="Résultats de recherche" value={form.region && form.department ? 'Indexable région / département' : 'Région et département requis'} />
           <Detail label="URL publique" value={form.slug ? `/${form.slug.replace(/^\//, '')}` : 'Slug à renseigner'} />
@@ -1078,7 +1117,7 @@ function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners }
 
       <div className="sticky bottom-4 z-10 rounded-3xl border border-border bg-white p-4 shadow-lift">
         <button className="btn-primary w-full justify-center" type="submit">
-          <Save size={18} /> Créer l’école
+          <Save size={18} /> {editingId ? 'Enregistrer les modifications' : 'Créer l’école'}
         </button>
       </div>
     </form>
@@ -1788,6 +1827,59 @@ function normalizeAdminPartner(partner) {
     ,
     frontVisibility: partner.frontVisibility || partner.front_visibility || 'active',
     bookingEnabled: partner.bookingEnabled ?? partner.booking_enabled ?? true
+  };
+}
+
+function schoolToSchoolForm(school, formulas = []) {
+  const photos = Array.isArray(school.photos) ? school.photos.join(', ') : (school.photos || school.galleryPhotos || '');
+  const practical = school.practical || {};
+  return {
+    ...newSchoolPartnerForm(),
+    name: school.name || '',
+    city: school.city || '',
+    department: school.department || '',
+    region: school.region || '',
+    spot: school.spot || '',
+    address: school.address || '',
+    latitude: school.latitude ?? '',
+    longitude: school.longitude ?? '',
+    shortDescription: school.shortDescription || school.short_description || '',
+    fullDescription: school.description || school.fullDescription || school.full_description || school.additionalInfo || '',
+    mainPhoto: school.imageUrl || school.mainPhoto || school.main_image_url || '',
+    galleryPhotos: photos,
+    logo: school.logo || school.logo_url || '',
+    website: school.website || '',
+    phone: school.phone || '',
+    email: school.email || '',
+    kitesurfBrief: school.spotDetails || school.spot_details || defaultKitesurfBrief,
+    schoolTitle: school.schoolTitle || 'Votre école de kitesurf',
+    schoolDescription: school.pedagogy || school.schoolDescription || school.school_description || '',
+    licenceRequired: Boolean(practical.ffvlLicenseRequired ?? school.licenceRequired),
+    licenceIncluded: Boolean(practical.licenseIncluded ?? school.licenceIncluded),
+    medicalCertificateRequired: Boolean(practical.medicalCertificateRequired ?? school.medicalCertificateRequired),
+    parentalAuthorizationRequired: Boolean(practical.parentalAuthorizationRequired ?? school.parentalAuthorizationRequired),
+    minAge: practical.minAge ?? school.minAge ?? '',
+    maxAge: practical.maxAge ?? school.maxAge ?? '',
+    minWeight: practical.minWeight ?? school.minWeight ?? '',
+    maxWeight: practical.maxWeight ?? school.maxWeight ?? '',
+    averageSessionDuration: practical.sessionDuration ?? school.averageSessionDuration ?? '',
+    maxParticipants: practical.maxParticipants ?? school.maxParticipants ?? '',
+    acceptedLevels: practical.level ? String(practical.level).split(',').map((item) => item.trim()).filter(Boolean) : [],
+    equipmentProvided: Boolean(practical.equipmentIncluded ?? school.equipmentProvided ?? true),
+    wetsuitProvided: Boolean(practical.wetsuitIncluded ?? school.wetsuitProvided ?? true),
+    changingRooms: Boolean(practical.changingRooms ?? school.changingRooms),
+    parking: Boolean(practical.parking ?? school.parking),
+    showers: Boolean(practical.showers ?? school.showers),
+    privateLessons: Boolean(practical.privateLessons ?? school.privateLessons ?? true),
+    groupLessons: Boolean(practical.groupLessons ?? school.groupLessons ?? true),
+    wingfoilAvailable: Boolean(practical.wingfoilAvailable ?? school.wingfoilAvailable),
+    rentalAvailable: Boolean(practical.rentalAvailable ?? school.rentalAvailable),
+    metaTitle: school.metaTitle || '',
+    metaDescription: school.metaDescription || '',
+    slug: school.slug || '',
+    frontVisibility: school.frontVisibility || school.front_visibility || 'active',
+    bookingEnabled: school.bookingEnabled ?? school.booking_enabled ?? true,
+    schoolFormulas: formulasToSchoolFormulas(formulas)
   };
 }
 

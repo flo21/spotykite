@@ -110,30 +110,45 @@ app.post('/api/uploads', (req, res) => {
 app.get('/api/spots/stats', (_req, res) => {
   const regions = rows(`
     SELECT region, COUNT(*) AS count
-    FROM partners
-    WHERE is_active = 1 AND region IS NOT NULL AND TRIM(region) != ''
+    FROM schools
+    WHERE COALESCE(status, 'active') = 'active'
+      AND COALESCE(front_visibility, 'active') = 'active'
+      AND region IS NOT NULL
+      AND TRIM(region) != ''
     GROUP BY region
     ORDER BY region ASC
   `);
 
   const cities = rows(`
     SELECT city, region, COUNT(*) AS count
-    FROM partners
-    WHERE is_active = 1 AND city IS NOT NULL AND TRIM(city) != ''
+    FROM schools
+    WHERE COALESCE(status, 'active') = 'active'
+      AND COALESCE(front_visibility, 'active') = 'active'
+      AND city IS NOT NULL
+      AND TRIM(city) != ''
     GROUP BY city, region
     ORDER BY city ASC
   `);
 
   const stageTypes = rows(`
-    SELECT stages.title AS type, stages.slug, COUNT(DISTINCT partner_stages.partner_id) AS count
-    FROM stages
-    JOIN partner_stages ON partner_stages.stage_id = stages.id
-    JOIN partners ON partners.id = partner_stages.partner_id
-    WHERE stages.is_active = 1
-      AND partner_stages.available = 1
-      AND partners.is_active = 1
-    GROUP BY stages.id, stages.title, stages.slug
-    ORDER BY stages.title ASC
+    SELECT
+      CASE COALESCE(offers.category, offers.type)
+        WHEN 'initiation' THEN 'Initiation kitesurf'
+        WHEN 'stage-3-jours' THEN 'Stage 3 jours'
+        WHEN 'stage-5-jours' THEN 'Stage 5 jours'
+        WHEN 'cours-particulier' THEN 'Cours particulier'
+        WHEN 'progression' THEN 'Progression'
+        ELSE COALESCE(offers.category, offers.type)
+      END AS type,
+      COALESCE(offers.category, offers.type) AS slug,
+      COUNT(DISTINCT offers.schoolId) AS count
+    FROM offers
+    JOIN schools ON schools.id = offers.schoolId
+    WHERE offers.active = 1
+      AND COALESCE(schools.status, 'active') = 'active'
+      AND COALESCE(schools.front_visibility, 'active') = 'active'
+    GROUP BY COALESCE(offers.category, offers.type)
+    ORDER BY type ASC
   `);
 
   res.json({ regions, cities, stageTypes });
@@ -322,22 +337,6 @@ app.get('/api/schools', (req, res) => {
   const params = {};
   const locationQuery = q || zone || '';
 
-  if (region) {
-    filters.push('LOWER(schools.region) = LOWER(:region)');
-    params.region = normalizeSlugQuery(region);
-  }
-  if (department) {
-    filters.push('LOWER(schools.department) = LOWER(:department)');
-    params.department = normalizeSlugQuery(department);
-  }
-  if (city) {
-    filters.push('(LOWER(schools.city) = LOWER(:city) OR LOWER(schools.spot) = LOWER(:city))');
-    params.city = normalizeSlugQuery(city);
-  }
-  if (spot) {
-    filters.push('LOWER(schools.spot) = LOWER(:spot)');
-    params.spot = normalizeSlugQuery(spot);
-  }
   if (locationQuery) {
     filters.push(`(
       LOWER(schools.region) LIKE LOWER(:location)
@@ -361,7 +360,10 @@ app.get('/api/schools', (req, res) => {
   }
 
   const where = filters.length ? ` WHERE ${filters.join(' AND ')}` : '';
-  res.json(rows(`${schoolSelect}${where} GROUP BY schools.id ORDER BY schools.region, schools.city, schools.name`, params).map(serializeSchool));
+  const schools = rows(`${schoolSelect}${where} GROUP BY schools.id ORDER BY schools.region, schools.city, schools.name`, params)
+    .map(serializeSchool)
+    .filter((school) => schoolMatchesLocationFilters(school, { region, department, city, spot }));
+  res.json(schools);
 });
 
 app.get('/api/schools/map', (req, res) => {
@@ -373,14 +375,6 @@ app.get('/api/schools/map', (req, res) => {
     'schools.longitude IS NOT NULL'
   ];
   const params = {};
-  if (region) {
-    filters.push('LOWER(schools.region) = LOWER(:region)');
-    params.region = normalizeSlugQuery(region);
-  }
-  if (department) {
-    filters.push('LOWER(schools.department) = LOWER(:department)');
-    params.department = normalizeSlugQuery(department);
-  }
   if (type) {
     const categoryFilter = schoolCategoryFilter(type);
     filters.push(`EXISTS (
@@ -396,7 +390,9 @@ app.get('/api/schools/map', (req, res) => {
     WHERE ${filters.join(' AND ')}
     GROUP BY schools.id
     ORDER BY schools.region, schools.city, schools.name
-  `, params).map(serializeSchool);
+  `, params)
+    .map(serializeSchool)
+    .filter((school) => schoolMatchesLocationFilters(school, { region, department }));
   res.json(schools.map((school) => ({
     id: school.id,
     name: school.name,
@@ -1230,6 +1226,21 @@ function incrementAvailabilityBooking(schoolId, formulaId, date) {
 
 function uniqueSorted(values) {
   return [...new Set(values.filter((value) => value !== null && value !== undefined && String(value).trim() !== ''))].sort((a, b) => String(a).localeCompare(String(b), 'fr'));
+}
+
+function matchesSlugValue(value, query) {
+  if (!query) return true;
+  const normalizedValue = slugify(value || '');
+  const normalizedQuery = slugify(normalizeSlugQuery(query));
+  return normalizedValue === normalizedQuery;
+}
+
+function schoolMatchesLocationFilters(school, filters = {}) {
+  if (!matchesSlugValue(school.region, filters.region)) return false;
+  if (!matchesSlugValue(school.department, filters.department)) return false;
+  if (filters.city && !matchesSlugValue(school.city, filters.city) && !matchesSlugValue(school.spot, filters.city)) return false;
+  if (!matchesSlugValue(school.spot, filters.spot)) return false;
+  return true;
 }
 
 function hasValidCoordinates(item) {
