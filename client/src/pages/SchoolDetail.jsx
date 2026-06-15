@@ -16,7 +16,8 @@ import {
   ShieldCheck,
   Shirt,
   Users,
-  Waves
+  Waves,
+  X
 } from 'lucide-react';
 import { api } from '../api.js';
 import Loading from '../components/Loading.jsx';
@@ -28,6 +29,7 @@ export default function SchoolDetail() {
   const [school, setSchool] = useState(null);
   const [status, setStatus] = useState('loading');
   const [selectedFormulaId, setSelectedFormulaId] = useState('');
+  const [mobileActionOpen, setMobileActionOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -92,52 +94,164 @@ export default function SchoolDetail() {
       <SchoolAnchorNav />
 
       <section className="section">
-        <div className="mx-auto grid max-w-6xl gap-8">
-          <StageSection>
-            <StageBrief />
-            <BeforeBooking school={school} />
-            <IncludedSection school={school} selectedFormula={selectedFormula} />
-            <FormulaSection school={school} selectedFormulaId={selectedFormulaId} onReserve={reserveFormula} canBook={canBook} />
-            {canBook && <InlineBookingCta school={school} selectedFormula={selectedFormula} />}
-            {!canBook && <UnavailableBookingCta school={school} selectedFormula={selectedFormula} />}
-          </StageSection>
-          <SchoolWelcome school={school} />
-          <LocationSection school={school} />
-          <AccommodationsSection accommodations={school.accommodations || []} />
-          {canBook && <GiftCardConversion />}
-          {canBook && <WhyBookSpotykite />}
-          <NearbySchools schools={school.nearbySchools || []} />
-          <SchoolFaq school={school} canBook={canBook} />
-          <FinalCta school={school} selectedFormula={selectedFormula} canBook={canBook} />
+        <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[minmax(0,1fr)_390px]">
+          <div className="grid min-w-0 gap-8">
+            <StageSection>
+              <StageBrief />
+              <BeforeBooking school={school} />
+              <IncludedSection school={school} selectedFormula={selectedFormula} />
+              <FormulaSection school={school} selectedFormulaId={selectedFormulaId} onReserve={reserveFormula} canBook={canBook} />
+            </StageSection>
+            <SchoolWelcome school={school} />
+            <LocationSection school={school} />
+            <AccommodationsSection accommodations={school.accommodations || []} />
+            {canBook && <GiftCardConversion />}
+            {canBook && <WhyBookSpotykite />}
+            <NearbySchools schools={school.nearbySchools || []} />
+            <SchoolFaq school={school} canBook={canBook} />
+            <FinalCta school={school} selectedFormula={selectedFormula} canBook={canBook} />
+          </div>
+
+          <DesktopActionCard
+            school={school}
+            formulas={school.formulas || []}
+            selectedFormula={selectedFormula}
+            selectedFormulaId={selectedFormulaId}
+            onSelectFormula={setSelectedFormulaId}
+            canBook={canBook}
+          />
         </div>
       </section>
 
-      {canBook && <div className="fixed inset-x-0 bottom-0 z-[9999] border-t border-turquoise/45 bg-[#062B4A]/95 px-4 py-3 text-white shadow-[0_-18px_44px_rgba(6,43,74,0.28)] backdrop-blur-[10px] sm:px-6 lg:hidden">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-black uppercase leading-tight sm:text-base">{heroFormulaTitle(selectedFormula)}</p>
-            <p className="truncate text-xs font-bold text-white/75">
-              {selectedFormula?.price ? `${selectedFormula.price} €` : school.startingPrice ? `${school.startingPrice} €` : 'Sur demande'}
-            </p>
-          </div>
-          <Link to={reservationUrl(school, selectedFormula)} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full bg-turquoise px-5 py-2 text-sm font-black text-navy transition hover:bg-primary">
-            Réserver
-          </Link>
-        </div>
-      </div>}
+      <MobileActionBar
+        school={school}
+        formulas={school.formulas || []}
+        selectedFormula={selectedFormula}
+        selectedFormulaId={selectedFormulaId}
+        onSelectFormula={setSelectedFormulaId}
+        canBook={canBook}
+        open={mobileActionOpen}
+        onOpen={() => setMobileActionOpen(true)}
+        onClose={() => setMobileActionOpen(false)}
+      />
     </main>
   );
 }
 
-function UnavailableBookingCta({ school, selectedFormula }) {
+function DesktopActionCard({ school, formulas, selectedFormula, selectedFormulaId, onSelectFormula, canBook }) {
   return (
-    <section id="availability-request" className="rounded-[2rem] border border-turquoise/25 bg-sky/50 p-6 sm:p-8">
-      <h2 className="text-3xl font-black text-navy">Préparez votre stage</h2>
-      <p className="mt-3 max-w-2xl text-sm font-bold text-muted">
-        Nous sélectionnons pour vous les meilleures disponibilités sur ce spot. Faites votre demande et notre équipe vous proposera la solution la plus adaptée.
+    <aside id="reservation" className="hidden lg:block">
+      <div className="sticky top-24 rounded-[2rem] border border-border bg-white p-6 shadow-lift">
+        <ActionPanelContent
+          school={school}
+          formulas={formulas}
+          selectedFormula={selectedFormula}
+          selectedFormulaId={selectedFormulaId}
+          onSelectFormula={onSelectFormula}
+          canBook={canBook}
+          compact
+        />
+      </div>
+    </aside>
+  );
+}
+
+function MobileActionBar({ school, formulas, selectedFormula, selectedFormulaId, onSelectFormula, canBook, open, onOpen, onClose }) {
+  const label = canBook ? 'Réserver mon stage' : 'Recevoir les disponibilités';
+  return (
+    <>
+      <div className="fixed inset-x-0 bottom-0 z-[9998] border-t border-turquoise/45 bg-[#062B4A]/95 px-4 py-3 text-white shadow-[0_-18px_44px_rgba(6,43,74,0.28)] backdrop-blur-[10px] sm:px-6 lg:hidden">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-black uppercase leading-tight sm:text-base">{canBook ? heroFormulaTitle(selectedFormula) : 'Préparez votre stage'}</p>
+            <p className="truncate text-xs font-bold text-white/75">
+              {canBook
+                ? selectedFormula?.price ? `${selectedFormula.price} €` : school.startingPrice ? `${school.startingPrice} €` : 'Sur demande'
+                : publicSchoolLocation(school)}
+            </p>
+          </div>
+          <button type="button" onClick={onOpen} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full bg-turquoise px-5 py-2 text-sm font-black text-navy transition hover:bg-primary">
+            {label}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="fixed inset-0 z-[10000] lg:hidden" role="dialog" aria-modal="true">
+          <button type="button" className="absolute inset-0 h-full w-full bg-navy/60" onClick={onClose} aria-label="Fermer le panneau" />
+          <div className="absolute inset-x-0 bottom-0 max-h-[88vh] overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-[0_-24px_70px_rgba(6,43,74,0.32)]">
+            <div className="mx-auto max-w-xl">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="eyebrow text-primary">{canBook ? 'Réservation' : 'Disponibilités'}</p>
+                  <h2 className="text-2xl font-black text-navy">{canBook ? 'Réserver mon stage' : 'Recevoir les disponibilités'}</h2>
+                </div>
+                <button type="button" onClick={onClose} className="inline-grid h-11 w-11 shrink-0 place-items-center rounded-full border border-border bg-bg text-navy" aria-label="Fermer">
+                  <X size={20} />
+                </button>
+              </div>
+              <ActionPanelContent
+                school={school}
+                formulas={formulas}
+                selectedFormula={selectedFormula}
+                selectedFormulaId={selectedFormulaId}
+                onSelectFormula={onSelectFormula}
+                canBook={canBook}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ActionPanelContent({ school, formulas, selectedFormula, selectedFormulaId, onSelectFormula, canBook, compact = false }) {
+  if (!canBook) {
+    return (
+      <div>
+        <h2 className={`${compact ? 'text-2xl' : 'text-3xl'} font-black text-navy`}>Préparez votre stage</h2>
+        <p className="mt-3 text-sm font-bold leading-relaxed text-muted">
+          Nous sélectionnons pour vous les meilleures disponibilités sur ce spot. Faites votre demande et notre équipe vous proposera la solution la plus adaptée.
+        </p>
+        <LeadRequestForm school={school} selectedFormula={selectedFormula} compact />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className={`${compact ? 'text-2xl' : 'text-3xl'} font-black text-navy`}>Réserver avec Spotykite</h2>
+      <p className="mt-3 text-sm font-bold leading-relaxed text-muted">
+        Choisissez votre formule et poursuivez dans le tunnel sécurisé Spotykite.
       </p>
-      <LeadRequestForm school={school} selectedFormula={selectedFormula} />
-    </section>
+      <div className="mt-5 grid gap-2">
+        {(formulas || []).map((formula) => (
+          <button
+            key={formula.id}
+            type="button"
+            onClick={() => onSelectFormula(String(formula.id))}
+            className={`rounded-2xl border p-4 text-left transition ${String(formula.id) === String(selectedFormulaId) ? 'border-turquoise bg-sky text-navy' : 'border-border bg-bg text-muted hover:border-turquoise/60'}`}
+          >
+            <span className="block font-black">{formula.name}</span>
+            <span className="mt-1 block text-sm font-bold">{formula.duration} · {formula.level}</span>
+            <span className="mt-2 block text-lg font-black text-primary">{formula.price ? `${formula.price} €` : 'Sur demande'}</span>
+          </button>
+        ))}
+      </div>
+      <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary mt-5 w-full justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
+        Réserver mon stage
+      </Link>
+      <Link to="/carte-cadeau" className="btn-secondary mt-3 w-full justify-center"><Gift size={18} /> Offrir un stage</Link>
+      <div className="mt-5 grid gap-2 rounded-2xl border border-turquoise/25 bg-sky/40 p-4">
+        {['Paiement sécurisé', 'Report météo possible', 'Accompagnement Spotykite'].map((item) => (
+          <p key={item} className="flex items-center gap-2 text-sm font-black text-navy">
+            <CheckCircle2 size={17} className="shrink-0 text-turquoise" />
+            {item}
+          </p>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -343,23 +457,6 @@ function FormulaSection({ school, selectedFormulaId, onReserve, canBook }) {
       ) : (
         <Empty title="Formules en préparation" text="Indiquez vos disponibilités et Spotykite vous orientera vers la formule la plus adaptée." />
       )}
-    </section>
-  );
-}
-
-function InlineBookingCta({ school, selectedFormula }) {
-  return (
-    <section id="reservation" className="rounded-[2rem] border border-turquoise/25 bg-sky/50 p-6 sm:p-8">
-      <h2 className="text-3xl font-black text-navy">Préparez votre stage</h2>
-      <p className="mt-3 max-w-2xl text-sm font-bold text-muted">
-        Choisissez votre formule et finalisez votre demande avec Spotykite.
-      </p>
-      <div className="mt-5 flex flex-wrap gap-3">
-        <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
-          Réserver cette formule
-        </Link>
-        <Link to="/carte-cadeau" className="btn-secondary justify-center"><Gift size={18} /> Offrir un stage</Link>
-      </div>
     </section>
   );
 }
