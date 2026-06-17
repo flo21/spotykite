@@ -4,15 +4,53 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config } from 'dotenv';
+import Stripe from 'stripe';
+import { Resend } from 'resend';
+import PDFDocument from 'pdfkit';
+import QRCode from 'qrcode';
 import { migrate, row, rows, run } from './db.js';
 import { seed } from './seed.js';
 
 const app = express();
-const port = process.env.PORT || 4000;
-const host = process.env.HOST || '127.0.0.1';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const envFiles = [
+  process.env.NODE_ENV === 'production' ? '.env.production' : null,
+  '.env'
+].filter(Boolean);
+
+for (const envFile of envFiles) {
+  config({ path: path.join(__dirname, '..', envFile), quiet: true });
+}
+
+const port = process.env.PORT || 4000;
+const host = process.env.HOST || '127.0.0.1';
 const uploadsDir = path.join(__dirname, '..', 'uploads');
+const frontendUrl = (process.env.FRONTEND_URL || process.env.CLIENT_ORIGIN?.split(',')[0] || 'http://localhost:5173').replace(/\/$/, '');
+let stripeClient;
+let resendClient;
+
+function stripeSecretKeyStatus() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return 'MISSING';
+  if (key === 'sk_test_xxx' || key === 'sk_live_xxx') return 'PLACEHOLDER';
+  if (!key.startsWith('sk_test_') && !key.startsWith('sk_live_')) return 'INVALID';
+  return 'OK';
+}
+
+function getStripeClient() {
+  if (stripeSecretKeyStatus() !== 'OK') return null;
+  if (!stripeClient) stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY);
+  return stripeClient;
+}
+
+console.log('[env] STRIPE_SECRET_KEY', stripeSecretKeyStatus());
+console.log('[env] STRIPE_WEBHOOK_SECRET', process.env.STRIPE_WEBHOOK_SECRET ? 'OK' : 'MISSING');
+console.log('RESEND_API_KEY:', process.env.RESEND_API_KEY ? 'OK' : 'MISSING');
+console.log('MAIL_FROM:', process.env.MAIL_FROM);
+console.log('SPOTYKITE_ADMIN_EMAIL:', process.env.SPOTYKITE_ADMIN_EMAIL);
+console.log('[stripe] Dashboard webhook events requis: checkout.session.completed, payment_intent.succeeded');
 
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -32,11 +70,68 @@ app.use(cors({
   },
   credentials: true
 }));
+
+app.post('/api/payments/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  console.log('WEBHOOK STRIPE RECU');
+  const stripe = getStripeClient();
+  if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
+    console.error('Stripe webhook config error', {
+      stripeSecretKeyStatus: stripeSecretKeyStatus(),
+      webhookSecretConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET)
+    });
+    return res.status(500).json({ error: 'Stripe webhook is not configured' });
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (error) {
+    console.error('Stripe webhook signature error', {
+      message: error.message,
+      stripeSignatureHeaderPresent: Boolean(req.headers['stripe-signature']),
+      webhookSecretConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET)
+    });
+    return res.status(400).send(`Webhook Error: ${error.message}`);
+  }
+
+  console.log('EVENT TYPE:', event.type);
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    console.log('Webhook checkout.session.completed reçu');
+    console.log('SESSION STRIPE:', session.id);
+    console.log('CUSTOMER EMAIL:', session.customer_details?.email || session.customer_email);
+    console.log('METADATA:', session.metadata);
+    const paidOrder = markStripeCheckoutSessionPaid(session);
+    if (paidOrder) {
+      await sendStripePaymentEmails(paidOrder, session);
+    }
+  }
+
+  if (event.type === 'payment_intent.succeeded') {
+    const paymentIntent = event.data.object;
+    console.log('Webhook payment_intent.succeeded reçu');
+    console.log('PAYMENT_INTENT:', paymentIntent.id);
+    console.log('PAYMENT_INTENT_AMOUNT:', paymentIntent.amount_received ?? paymentIntent.amount);
+    console.log('METADATA:', paymentIntent.metadata);
+    console.log('PAYMENT INTENT METADATA:', paymentIntent.metadata);
+    console.log('CUSTOMER EMAIL:', paymentIntent.metadata?.customerEmail);
+    const paidOrder = markStripePaymentIntentPaid(paymentIntent);
+    if (paidOrder) {
+      await sendStripePaymentEmails(paidOrder, paymentIntent);
+    }
+  }
+
+  res.json({ received: true });
+});
+
 app.use(express.json({ limit: '12mb' }));
 app.use('/uploads', express.static(uploadsDir));
 
 const offerSelect = `
-  SELECT offers.*, schools.name AS schoolName, schools.slug AS schoolSlug, schools.region, schools.department, schools.city, schools.spot, schools.rating, schools.phone, schools.email,
+  SELECT offers.*, schools.name AS schoolName, schools.slug AS schoolSlug, schools.region, schools.department, schools.city, schools.spot,
+    schools.address AS schoolAddress, schools.website AS schoolWebsite, schools.phone AS schoolPhone, schools.email AS schoolEmail,
+    schools.rating, schools.phone, schools.email,
     formula_prices.low_season_weekday_price, formula_prices.low_season_weekend_price,
     formula_prices.high_season_weekday_price, formula_prices.high_season_weekend_price,
     formula_prices.default_price
@@ -223,8 +318,8 @@ app.get('/api/orders', (_req, res) => {
 app.post('/api/orders', (req, res) => {
   const payload = orderPayload(req.body);
   const result = run(`
-    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, payload);
   res.status(201).json(serializeOrder(row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid])));
 });
@@ -234,7 +329,7 @@ app.put('/api/orders/:id', (req, res) => {
   run(`
     UPDATE orders SET order_number = ?, customer_firstname = ?, customer_lastname = ?, customer_email = ?, customer_phone = ?,
       product_type = ?, stage_id = ?, partner_id = ?, city = ?, spot = ?, amount = ?, status = ?,
-      payment_status = ?, payment_provider = ?, payment_id = ?, updated_at = CURRENT_TIMESTAMP
+      payment_status = ?, payment_provider = ?, payment_id = ?, title = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `, [...payload, req.params.id]);
   res.json(serializeOrder(row('SELECT * FROM orders WHERE id = ?', [req.params.id])));
@@ -243,6 +338,236 @@ app.put('/api/orders/:id', (req, res) => {
 app.delete('/api/orders/:id', (req, res) => {
   run('DELETE FROM orders WHERE id = ?', [req.params.id]);
   res.status(204).end();
+});
+
+app.post('/api/payments/create-checkout-session', async (req, res) => {
+  const stripeKeyStatus = stripeSecretKeyStatus();
+  console.log('[payments] STRIPE_SECRET_KEY', stripeKeyStatus);
+  const stripe = getStripeClient();
+  if (!stripe) {
+    const error = stripeKeyStatus === 'PLACEHOLDER'
+      ? 'STRIPE_SECRET_KEY is still set to the placeholder sk_test_xxx'
+      : 'STRIPE_SECRET_KEY is not configured';
+    return res.status(500).json({ error });
+  }
+
+  try {
+    const { orderId, amount, customerEmail, title, metadata = {}, order = {} } = req.body;
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+    if (!customerEmail) return res.status(400).json({ error: 'customerEmail is required' });
+
+    const savedOrder = orderId ? row('SELECT * FROM orders WHERE id = ? OR order_number = ?', [orderId, orderId]) : createPendingStripeOrder({
+      ...order,
+      amount: Math.round(numericAmount),
+      customerEmail,
+      title,
+      metadata
+    });
+    if (!savedOrder) return res.status(404).json({ error: 'Order not found' });
+    if (savedOrder.payment_status === 'paid') return res.status(409).json({ error: 'Order already paid' });
+    console.log('Commande créée', {
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.order_number,
+      customerEmail
+    });
+
+    const checkoutSession = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer_email: customerEmail,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: 'eur',
+            unit_amount: Math.round(numericAmount * 100),
+            product_data: {
+              name: title || savedOrder.title || savedOrder.product_type || `Commande ${savedOrder.order_number}`
+            }
+          }
+        }
+      ],
+      success_url: `${frontendUrl}/paiement-reussi?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/paiement-annule`,
+      metadata: {
+        ...stringifyMetadata(metadata),
+        customerEmail,
+        orderId: String(savedOrder.id),
+        orderNumber: savedOrder.order_number
+      }
+    });
+
+    run(`
+      UPDATE orders
+      SET payment_provider = 'stripe',
+        stripe_session_id = ?,
+        payment_id = ?,
+        metadata = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [checkoutSession.id, checkoutSession.id, JSON.stringify({ ...metadata, stripeCheckoutUrl: checkoutSession.url }), savedOrder.id]);
+
+    res.status(201).json({ checkoutUrl: checkoutSession.url, sessionId: checkoutSession.id, orderId: savedOrder.id });
+  } catch (error) {
+    console.error('Stripe checkout session error', error);
+    res.status(500).json({ error: 'Impossible de créer la session Stripe' });
+  }
+});
+
+app.post('/api/payments/create-payment-intent', async (req, res) => {
+  const stripeKeyStatus = stripeSecretKeyStatus();
+  console.log('[payments] STRIPE_SECRET_KEY', stripeKeyStatus);
+  const stripe = getStripeClient();
+  if (!stripe) {
+    const error = stripeKeyStatus === 'PLACEHOLDER'
+      ? 'STRIPE_SECRET_KEY is still set to the placeholder sk_test_xxx'
+      : 'STRIPE_SECRET_KEY is not configured';
+    return res.status(500).json({ error });
+  }
+
+  try {
+    const { amount, customerEmail, customerName = '', title, metadata = {}, order = {} } = req.body;
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+    if (!customerEmail) return res.status(400).json({ error: 'customerEmail is required' });
+
+    const savedOrder = createPendingStripeOrder({
+      ...order,
+      amount: Math.round(numericAmount),
+      customerEmail,
+      customerName,
+      title,
+      metadata
+    });
+
+    const paymentMetadata = stringifyMetadata({
+      ...metadata,
+      customerEmail,
+      customerName,
+      orderId: String(savedOrder.id),
+      orderNumber: savedOrder.order_number,
+      offerName: metadata.offerName || title || savedOrder.title || '',
+      schoolName: metadata.schoolName || ''
+    });
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(numericAmount * 100),
+      currency: 'eur',
+      receipt_email: customerEmail,
+      description: title || savedOrder.title || `Commande ${savedOrder.order_number}`,
+      automatic_payment_methods: { enabled: true },
+      metadata: paymentMetadata
+    });
+
+    run(`
+      UPDATE orders
+      SET payment_provider = 'stripe',
+        payment_id = ?,
+        metadata = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [paymentIntent.id, JSON.stringify({ ...metadata, ...paymentMetadata, stripePaymentIntent: paymentIntent.id }), savedOrder.id]);
+
+    console.log('PaymentIntent créé', {
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.order_number,
+      paymentIntentId: paymentIntent.id,
+      customerEmail
+    });
+
+    res.status(201).json({
+      clientSecret: paymentIntent.client_secret,
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.order_number,
+      paymentIntentId: paymentIntent.id
+    });
+  } catch (error) {
+    console.error('Stripe payment intent error', error);
+    res.status(500).json({ error: 'Impossible de préparer le paiement Stripe' });
+  }
+});
+
+app.get('/api/payments/payment-intent/:paymentIntentId', async (req, res) => {
+  const stripe = getStripeClient();
+  let order = row('SELECT * FROM orders WHERE payment_id = ?', [req.params.paymentIntentId]);
+  if (!order) return res.status(404).json({ error: 'Paiement Stripe introuvable' });
+
+  if (stripe && order.payment_status !== 'paid') {
+    try {
+      const paymentIntent = await stripe.paymentIntents.retrieve(req.params.paymentIntentId);
+      console.log('PaymentIntent récupéré depuis page retour', {
+        paymentIntentId: paymentIntent.id,
+        status: paymentIntent.status,
+        customerEmail: paymentIntent.receipt_email || paymentIntent.metadata?.customerEmail
+      });
+
+      if (paymentIntent.status === 'succeeded') {
+        const paidOrder = markStripePaymentIntentPaid(paymentIntent);
+        if (paidOrder) {
+          await sendStripePaymentEmails(paidOrder, paymentIntent);
+          order = row('SELECT * FROM orders WHERE id = ?', [paidOrder.id]);
+        }
+      }
+    } catch (error) {
+      console.error('Erreur récupération PaymentIntent retour paiement', {
+        paymentIntentId: req.params.paymentIntentId,
+        error
+      });
+    }
+  }
+
+  res.json({
+    paymentIntentId: req.params.paymentIntentId,
+    orderId: order.id,
+    orderNumber: order.order_number,
+    status: order.status,
+    paymentStatus: order.payment_status,
+    paid: order.payment_status === 'paid'
+  });
+});
+
+app.get('/api/payments/checkout-session/:sessionId', async (req, res) => {
+  const stripe = getStripeClient();
+  let order = row('SELECT * FROM orders WHERE stripe_session_id = ? OR payment_id = ?', [req.params.sessionId, req.params.sessionId]);
+  if (!order) return res.status(404).json({ error: 'Session Stripe introuvable' });
+
+  if (stripe && order.payment_status !== 'paid') {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
+      console.log('Session Stripe récupérée depuis page retour', {
+        sessionId: session.id,
+        status: session.status,
+        paymentStatus: session.payment_status,
+        customerEmail: session.customer_details?.email || session.customer_email
+      });
+
+      if (session.payment_status === 'paid' || session.status === 'complete') {
+        const paidOrder = markStripeCheckoutSessionPaid(session);
+        if (paidOrder) {
+          await sendStripePaymentEmails(paidOrder, session);
+          order = row('SELECT * FROM orders WHERE id = ?', [paidOrder.id]);
+        }
+      }
+    } catch (error) {
+      console.error('Erreur récupération session Stripe retour paiement', {
+        sessionId: req.params.sessionId,
+        error
+      });
+    }
+  }
+
+  res.json({
+    sessionId: req.params.sessionId,
+    orderId: order.id,
+    orderNumber: order.order_number,
+    status: order.status,
+    paymentStatus: order.payment_status,
+    paid: order.payment_status === 'paid'
+  });
 });
 
 app.get('/api/prospects', (_req, res) => {
@@ -1276,8 +1601,455 @@ function orderPayload(body) {
     body.status || 'en attente',
     body.payment_status || body.paymentStatus || 'pending',
     body.payment_provider || body.paymentProvider || '',
-    body.payment_id || body.paymentId || ''
+    body.payment_id || body.paymentId || '',
+    body.title || body.product || '',
+    body.metadata ? JSON.stringify(body.metadata) : null
   ];
+}
+
+function createPendingStripeOrder(body) {
+  const payload = orderPayload({
+    ...body,
+    status: 'pending',
+    paymentStatus: 'pending',
+    paymentProvider: 'stripe'
+  });
+  const result = run(`
+    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, payload);
+  return row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
+}
+
+function stringifyMetadata(metadata = {}) {
+  return Object.fromEntries(
+    Object.entries(metadata)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, String(value)])
+  );
+}
+
+function parseMetadata(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function findStripeOrderFromMetadata(metadata, fallbackColumn, fallbackValue) {
+  if (metadata.orderId) {
+    const order = row('SELECT * FROM orders WHERE id = ? OR order_number = ?', [metadata.orderId, metadata.orderId]);
+    if (order) return order;
+  }
+  if (metadata.orderNumber) {
+    const order = row('SELECT * FROM orders WHERE order_number = ?', [metadata.orderNumber]);
+    if (order) return order;
+  }
+  if (fallbackColumn === 'stripe_session_id') {
+    return row('SELECT * FROM orders WHERE stripe_session_id = ? OR payment_id = ?', [fallbackValue, fallbackValue]);
+  }
+  return row('SELECT * FROM orders WHERE payment_id = ?', [fallbackValue]);
+}
+
+function markStripeCheckoutSessionPaid(session) {
+  const metadata = session.metadata || {};
+  const order = findStripeOrderFromMetadata(metadata, 'stripe_session_id', session.id);
+
+  if (!order) {
+    console.warn('Stripe webhook order not found for session', session.id);
+    return null;
+  }
+
+  const orderMetadata = {
+    ...parseMetadata(order.metadata),
+    ...metadata,
+    stripeCheckoutUrl: parseMetadata(order.metadata).stripeCheckoutUrl,
+    stripePaymentIntent: session.payment_intent || ''
+  };
+
+  run(`
+    UPDATE orders
+    SET status = 'payé',
+      payment_status = 'paid',
+      payment_provider = 'stripe',
+      payment_id = ?,
+      stripe_session_id = ?,
+      metadata = ?,
+      paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [session.payment_intent || session.id, session.id, JSON.stringify(orderMetadata), order.id]);
+
+  if (orderMetadata.resumeToken) {
+    markInitiatedPaid(orderMetadata.resumeToken, order.amount);
+  }
+
+  console.log('Stripe checkout order paid', {
+    sessionId: session.id,
+    orderId: order.id,
+    orderNumber: order.order_number
+  });
+  console.log('Commande payée', {
+    orderId: order.id,
+    orderNumber: order.order_number,
+    customerEmail: order.customer_email
+  });
+
+  return row('SELECT * FROM orders WHERE id = ?', [order.id]);
+}
+
+function markStripePaymentIntentPaid(paymentIntent) {
+  const metadata = paymentIntent.metadata || {};
+  const order = findStripeOrderFromMetadata(metadata, 'payment_id', paymentIntent.id);
+
+  if (!order) {
+    console.warn('Stripe webhook order not found for payment intent', paymentIntent.id);
+    return null;
+  }
+
+  const orderMetadata = {
+    ...parseMetadata(order.metadata),
+    ...metadata,
+    stripePaymentIntent: paymentIntent.id
+  };
+
+  run(`
+    UPDATE orders
+    SET status = 'payé',
+      payment_status = 'paid',
+      payment_provider = 'stripe',
+      payment_id = ?,
+      metadata = ?,
+      paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [paymentIntent.id, JSON.stringify(orderMetadata), order.id]);
+
+  if (orderMetadata.resumeToken) {
+    markInitiatedPaid(orderMetadata.resumeToken, order.amount);
+  }
+
+  console.log('Stripe payment intent order paid', {
+    paymentIntentId: paymentIntent.id,
+    orderId: order.id,
+    orderNumber: order.order_number
+  });
+  console.log('Commande payée', {
+    orderId: order.id,
+    orderNumber: order.order_number,
+    customerEmail: order.customer_email
+  });
+
+  return row('SELECT * FROM orders WHERE id = ?', [order.id]);
+}
+
+function getResendClient() {
+  if (resendClient) return resendClient;
+  if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 're_xxxxxxxxx') {
+    throw new Error('Configuration Resend manquante: RESEND_API_KEY');
+  }
+  resendClient = new Resend(process.env.RESEND_API_KEY);
+  return resendClient;
+}
+
+function mailFrom() {
+  return process.env.MAIL_FROM || 'Spotykite <onboarding@resend.dev>';
+}
+
+async function sendStripePaymentEmails(order, session) {
+  const emailData = buildStripePaymentEmailData(order, session);
+  console.log('Tentative envoi Resend', {
+    orderId: order.id,
+    sessionId: session.id,
+    customerEmail: emailData.customerEmail,
+    adminEmail: process.env.SPOTYKITE_ADMIN_EMAIL
+  });
+  const emailResults = await Promise.allSettled([
+    sendCustomerPaymentEmail(order, emailData),
+    sendAdminPaymentEmail(order, emailData)
+  ]);
+  console.log('RESULTATS ENVOI EMAILS STRIPE:', emailResults);
+}
+
+async function sendCustomerPaymentEmail(order, emailData) {
+  if (order.customer_email_sent_at) {
+    console.log('Email client déjà envoyé', { orderId: order.id, sentAt: order.customer_email_sent_at });
+    return;
+  }
+  if (!emailData.customerEmail) {
+    console.warn('Email client non envoyé: email client manquant', { orderId: order.id, sessionId: emailData.sessionId });
+    return;
+  }
+
+  console.log('Client email:', emailData.customerEmail);
+  console.log('ENVOI EMAIL CLIENT...');
+
+  try {
+    console.log('AVANT ENVOI EMAIL CLIENT');
+    const reservationPdf = await createReservationPdf(emailData);
+    const resultClient = await getResendClient().emails.send({
+      from: mailFrom(),
+      to: emailData.customerEmail,
+      subject: 'Confirmation de votre demande Spotykite',
+      html: paymentCustomerHtml(emailData),
+      attachments: [
+        {
+          filename: `Reservation-${emailData.orderNumber}.pdf`,
+          content: reservationPdf.toString('base64')
+        }
+      ]
+    });
+    console.log('EMAIL CLIENT RESULT:', resultClient);
+    console.log('RESEND CLIENT RESULT:', resultClient);
+    if (resultClient?.error) {
+      throw resultClient.error;
+    }
+    run('UPDATE orders SET customer_email_sent_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
+    console.log('Email client envoyé', { orderId: order.id, to: emailData.customerEmail });
+  } catch (error) {
+    console.error('Erreur email Resend', {
+      type: 'client',
+      orderId: order.id,
+      to: emailData.customerEmail,
+      error
+    });
+  }
+}
+
+async function sendAdminPaymentEmail(order, emailData) {
+  if (order.admin_email_sent_at) {
+    console.log('Email admin déjà envoyé', { orderId: order.id, sentAt: order.admin_email_sent_at });
+    return;
+  }
+  const adminEmail = process.env.SPOTYKITE_ADMIN_EMAIL;
+  if (!adminEmail) {
+    console.warn('Email Spotykite non envoyé: SPOTYKITE_ADMIN_EMAIL manquant', { orderId: order.id, sessionId: emailData.sessionId });
+    return;
+  }
+
+  try {
+    console.log('ENVOI EMAIL ADMIN...');
+    console.log('AVANT ENVOI EMAIL ADMIN');
+    const resultAdmin = await getResendClient().emails.send({
+      from: mailFrom(),
+      to: adminEmail,
+      subject: 'Nouvelle réservation payée sur Spotykite',
+      html: paymentAdminHtml(emailData)
+    });
+    console.log('EMAIL ADMIN RESULT:', resultAdmin);
+    console.log('RESEND ADMIN RESULT:', resultAdmin);
+    if (resultAdmin?.error) {
+      throw resultAdmin.error;
+    }
+    run('UPDATE orders SET admin_email_sent_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
+    console.log('Email admin envoyé', { orderId: order.id, to: adminEmail });
+  } catch (error) {
+    console.error('Erreur email Resend', {
+      type: 'admin',
+      orderId: order.id,
+      to: adminEmail,
+      error
+    });
+  }
+}
+
+function buildStripePaymentEmailData(order, stripePayment) {
+  const metadata = { ...parseMetadata(order.metadata), ...(stripePayment.metadata || {}) };
+  const formulaId = metadata.formulaId || metadata.formula_id;
+  const schoolId = metadata.schoolId || metadata.school_id;
+  const formula = formulaId ? row(`${offerSelect} WHERE offers.id = ?`, [formulaId]) : null;
+  const school = !formula && schoolId ? row('SELECT * FROM schools WHERE id = ?', [schoolId]) : null;
+  const customerName = stripePayment.customer_details?.name || metadata.customerName || `${order.customer_firstname || ''} ${order.customer_lastname || ''}`.trim();
+  const stripeAmount = stripePayment.amount_total ?? stripePayment.amount_received ?? stripePayment.amount;
+  const amount = Number(stripeAmount ? stripeAmount / 100 : order.amount || 0);
+  const city = order.city || formula?.city || school?.city || metadata.city || '';
+  const spot = order.spot || formula?.spot || school?.spot || metadata.spot || '';
+  const schoolName = formula?.schoolName || school?.name || metadata.schoolName || metadata.school_name || '';
+  const schoolPhone = formula?.schoolPhone || formula?.phone || school?.phone || metadata.schoolPhone || metadata.school_phone || '';
+  const schoolEmail = formula?.schoolEmail || formula?.email || school?.email || metadata.schoolEmail || metadata.school_email || '';
+  const schoolAddress = formula?.schoolAddress || school?.address || metadata.schoolAddress || metadata.school_address || '';
+  const schoolWebsite = formula?.schoolWebsite || school?.website || metadata.schoolWebsite || metadata.school_website || '';
+  const desiredDate = metadata.desiredDate || metadata.desired_date || metadata.selectedDate || metadata.selected_date || '';
+  const hasReservedDate = Boolean(desiredDate && !String(desiredDate).toLowerCase().includes('définir') && !String(desiredDate).toLowerCase().includes('definir'));
+  const offerName = metadata.offerName || metadata.offer_name || '';
+
+  return {
+    orderNumber: metadata.orderNumber || metadata.order_number || order.order_number,
+    customerName,
+    customerEmail: stripePayment.customer_details?.email || stripePayment.customer_email || stripePayment.receipt_email || metadata.customerEmail || metadata.customer_email || order.customer_email,
+    customerPhone: order.customer_phone || '',
+    productName: formula?.title || formula?.name || offerName || order.title || order.product_type || 'Réservation Spotykite',
+    formulaName: formula?.title || formula?.name || offerName || order.title || 'Stage Spotykite',
+    amountLabel: new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(amount),
+    schoolName,
+    schoolPhone,
+    schoolEmail,
+    schoolAddress,
+    schoolWebsite,
+    city,
+    spot,
+    locationLabel: [city, spot].filter(Boolean).join(' - '),
+    reservedDate: hasReservedDate ? formatEmailDate(desiredDate) : '',
+    reservedTime: metadata.desiredTime || metadata.startTime || metadata.time || 'À confirmer avec l’école',
+    dateToDefine: !hasReservedDate,
+    sessionId: stripePayment.id,
+    paymentIntent: stripePayment.payment_intent || stripePayment.id || order.payment_id || '',
+    metadata
+  };
+}
+
+function paymentCustomerHtml(data) {
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.55;color:#12385C;max-width:680px">
+      <h1 style="font-size:24px;margin:0 0 12px">Votre réservation Spotykite est confirmée</h1>
+      <p>Bonjour${data.customerName ? ` ${escapeHtml(data.customerName)}` : ''},</p>
+      <p>Votre paiement est confirmé. Vous trouverez ci-dessous les informations utiles pour votre stage.</p>
+
+      <h2 style="font-size:18px;margin-top:24px">Récapitulatif de commande</h2>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%">
+        ${emailRows([
+          ['Commande', data.orderNumber],
+          ['Formule réservée', data.formulaName],
+          ['Montant payé', data.amountLabel],
+          ['École', data.schoolName || '-'],
+          ['Lieu', data.locationLabel || '-']
+        ])}
+      </table>
+
+      <h2 style="font-size:18px;margin-top:24px">Coordonnées de l’école</h2>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%">
+        ${emailRows([
+          ['Nom de l’école', data.schoolName || '-'],
+          ['Téléphone', data.schoolPhone || '-'],
+          ['Email', data.schoolEmail || '-'],
+          ['Adresse', data.schoolAddress || '-'],
+          ['Site web', data.schoolWebsite || '-']
+        ])}
+      </table>
+
+      <h2 style="font-size:18px;margin-top:24px">Date de votre stage</h2>
+      ${data.dateToDefine ? `
+        <p><strong>Votre stage est bien réservé.</strong></p>
+        <p>Merci de contacter directement l’école afin de convenir d’une date de pratique.</p>
+        <p>Les coordonnées de l’école figurent ci-dessus.</p>
+      ` : `
+        <p><strong>Date :</strong> ${escapeHtml(data.reservedDate)}</p>
+        <p><strong>Heure :</strong> ${escapeHtml(data.reservedTime)}</p>
+        <p>Merci de vous présenter 15 minutes avant le début de votre séance.</p>
+      `}
+
+      <p style="margin-top:24px">Votre bon de réservation Spotykite est joint à cet email.</p>
+      <p>À bientôt,<br>Spotykite</p>
+    </div>
+  `;
+}
+
+async function createReservationPdf(data) {
+  const qrCode = await QRCode.toBuffer(data.orderNumber, { width: 180, margin: 1 });
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 48 });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const blue = '#12385C';
+    const turquoise = '#2DD4BF';
+    const muted = '#5B7083';
+
+    doc.rect(0, 0, doc.page.width, 96).fill(blue);
+    doc.fillColor('#FFFFFF').fontSize(24).font('Helvetica-Bold').text('Spotykite', 48, 32);
+    doc.fillColor(turquoise).fontSize(10).font('Helvetica-Bold').text('BON DE RÉSERVATION SPOTYKITE', 48, 64);
+
+    doc.fillColor(blue).fontSize(18).font('Helvetica-Bold').text('BON DE RÉSERVATION SPOTYKITE', 48, 126);
+    doc.fillColor(muted).fontSize(11).font('Helvetica').text(`Commande : ${data.orderNumber}`, 48, 154);
+
+    doc.image(qrCode, 410, 122, { width: 110 });
+    doc.fillColor(muted).fontSize(9).text('QR Code réservation', 405, 236, { width: 120, align: 'center' });
+
+    let y = 210;
+    y = pdfSection(doc, 'Participant', [data.customerName || '-', data.customerEmail || '', data.customerPhone || ''].filter(Boolean), y);
+    y = pdfSection(doc, 'École', [data.schoolName || '-', data.schoolAddress || '', data.schoolWebsite || ''].filter(Boolean), y);
+    y = pdfSection(doc, 'Lieu', [[data.city, data.spot].filter(Boolean).join(' - ') || '-'], y);
+    y = pdfSection(doc, 'Formule', [data.formulaName || '-'], y);
+    y = pdfSection(doc, 'Date', [data.dateToDefine ? 'Date à définir avec l’école' : `${data.reservedDate}${data.reservedTime ? ` - ${data.reservedTime}` : ''}`], y);
+    y = pdfSection(doc, 'Téléphone', [data.schoolPhone || '-'], y);
+    y = pdfSection(doc, 'Email', [data.schoolEmail || '-'], y);
+
+    doc.moveTo(48, y + 18).lineTo(547, y + 18).strokeColor('#D8E6EF').stroke();
+    doc.fillColor(muted).fontSize(9).font('Helvetica').text('Présentez ce bon à l’école ou communiquez le numéro de commande pour retrouver rapidement votre réservation.', 48, y + 34, { width: 499 });
+
+    doc.end();
+  });
+}
+
+function pdfSection(doc, title, lines, y) {
+  doc.fillColor('#12385C').fontSize(12).font('Helvetica-Bold').text(`${title} :`, 48, y);
+  doc.fillColor('#1F2A37').fontSize(11).font('Helvetica');
+  lines.forEach((line, index) => {
+    doc.text(String(line), 160, y + (index * 16), { width: 250 });
+  });
+  return y + Math.max(44, lines.length * 16 + 22);
+}
+
+function emailRows(rows) {
+  return rows.map(([label, value]) => `
+    <tr>
+      <td style="border:1px solid #dbe7ef;font-weight:bold;width:180px">${escapeHtml(label)}</td>
+      <td style="border:1px solid #dbe7ef">${escapeHtml(value)}</td>
+    </tr>
+  `).join('');
+}
+
+function paymentAdminHtml(data) {
+  const rows = [
+    ['Client', data.customerName || '-'],
+    ['Email', data.customerEmail || '-'],
+    ['Téléphone', data.customerPhone || '-'],
+    ['Produit', data.productName],
+    ['Montant payé', data.amountLabel],
+    ['Lieu', data.locationLabel || '-'],
+    ['Commande', data.orderNumber],
+    ['Session Stripe', data.sessionId],
+    ['Payment intent', data.paymentIntent || '-']
+  ];
+
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#12385C">
+      <h1 style="font-size:22px">Nouvelle réservation payée</h1>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse">
+        ${rows.map(([label, value]) => `
+          <tr>
+            <td style="border:1px solid #dbe7ef;font-weight:bold">${escapeHtml(label)}</td>
+            <td style="border:1px solid #dbe7ef">${escapeHtml(value)}</td>
+          </tr>
+        `).join('')}
+      </table>
+    </div>
+  `;
+}
+
+function formatEmailDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('fr-FR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  }).format(date);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 function serializePartner(partner) {

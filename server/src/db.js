@@ -330,6 +330,12 @@ export function migrate() {
   addColumnIfMissing('bookings', 'paymentStatus', "TEXT NOT NULL DEFAULT 'pending'");
   addColumnIfMissing('bookings', 'orderStatus', "TEXT NOT NULL DEFAULT 'en attente'");
   addColumnIfMissing('bookings', 'giftCardCode', 'TEXT');
+  addColumnIfMissing('orders', 'title', 'TEXT');
+  addColumnIfMissing('orders', 'stripe_session_id', 'TEXT');
+  addColumnIfMissing('orders', 'paid_at', 'TEXT');
+  addColumnIfMissing('orders', 'metadata', 'TEXT');
+  addColumnIfMissing('orders', 'customer_email_sent_at', 'TEXT');
+  addColumnIfMissing('orders', 'admin_email_sent_at', 'TEXT');
   addColumnIfMissing('schools', 'slug', 'TEXT');
   addColumnIfMissing('schools', 'department', 'TEXT');
   addColumnIfMissing('schools', 'address', 'TEXT');

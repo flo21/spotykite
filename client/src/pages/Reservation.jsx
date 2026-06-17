@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Calendar, CheckCircle2, CreditCard, UserRound } from 'lucide-react';
+import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
+import { loadStripe } from '@stripe/stripe-js';
 import { api } from '../api.js';
 import Loading from '../components/Loading.jsx';
 import { publicSchoolLocation, publicSchoolTitle } from '../utils/schoolDisplay.js';
 
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '');
+
 export default function Reservation() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { token: resumeRouteToken } = useParams();
   const type = searchParams.get('type');
@@ -22,7 +27,7 @@ export default function Reservation() {
     customerEmail: '',
     customerPhone: '',
     desiredDate: '',
-    dateFlexible: false
+    dateFlexible: true
   });
   const [giftCard, setGiftCard] = useState({
     buyerFirstname: '',
@@ -35,6 +40,10 @@ export default function Reservation() {
     message: ''
   });
   const [created, setCreated] = useState(null);
+  const [paymentError, setPaymentError] = useState('');
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentIntent, setPaymentIntent] = useState(null);
+  const [paymentIntentLoading, setPaymentIntentLoading] = useState(false);
   const [availabilities, setAvailabilities] = useState([]);
   const [resumeOrder, setResumeOrder] = useState(null);
 
@@ -149,6 +158,7 @@ export default function Reservation() {
   const giftRecipientEmail = giftCard.recipientMode === 'self' ? giftCard.buyerEmail : giftCard.recipientEmail;
   const selectedAvailability = availabilities.find((item) => item.date === booking.desiredDate);
   const selectedPrice = selectedAvailability?.appliedPrice || offer?.price || 0;
+  const canPreparePayment = !isGiftCard && canContinueContact && canContinueDate && selectedPrice > 0 && school && offer;
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -160,6 +170,49 @@ export default function Reservation() {
   useEffect(() => {
     if (step >= 2) saveInitiated(stepName(step));
   }, [step, booking.desiredDate, booking.dateFlexible]);
+
+  useEffect(() => {
+    if (!canPreparePayment) {
+      setPaymentIntent(null);
+      return;
+    }
+
+    let active = true;
+    const timeout = setTimeout(() => {
+      setPaymentIntentLoading(true);
+      setPaymentError('');
+      api.createPaymentIntent(bookingPaymentPayload())
+        .then((intent) => {
+          if (!active) return;
+          setPaymentIntent(intent);
+        })
+        .catch((error) => {
+          if (!active) return;
+          setPaymentIntent(null);
+          setPaymentError(error.message || 'Impossible de préparer le paiement Stripe');
+        })
+        .finally(() => {
+          if (active) setPaymentIntentLoading(false);
+        });
+    }, 500);
+
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+    };
+  }, [
+    canPreparePayment,
+    booking.customerFirstname,
+    booking.customerLastname,
+    booking.customerEmail,
+    booking.customerPhone,
+    booking.desiredDate,
+    booking.dateFlexible,
+    selectedPrice,
+    school?.id,
+    offer?.id,
+    resumeOrder?.resumeToken
+  ]);
 
   async function saveInitiated(lastStep) {
     const email = isGiftCard ? giftCard.buyerEmail : booking.customerEmail;
@@ -205,34 +258,124 @@ export default function Reservation() {
 
   async function submit(event) {
     event.preventDefault();
-    if (isGiftCard) {
-      const result = await api.createGiftCard({
-        buyerName: `${giftCard.buyerFirstname} ${giftCard.buyerLastname}`.trim(),
-        buyerEmail: giftCard.buyerEmail,
-        buyerPhone: giftCard.buyerPhone,
+    setPaymentError('');
+    setPaymentLoading(true);
+    try {
+      const checkout = await api.createCheckoutSession(isGiftCard ? giftCardCheckoutPayload() : bookingCheckoutPayload());
+      if (checkout.checkoutUrl) {
+        window.location.assign(checkout.checkoutUrl);
+        return;
+      }
+      throw new Error('Session Stripe invalide');
+    } catch (error) {
+      setPaymentError(error.message || 'Impossible de démarrer le paiement Stripe');
+      setPaymentLoading(false);
+    }
+  }
+
+  function bookingCheckoutPayload() {
+    const desiredDate = booking.dateFlexible ? 'date à définir' : booking.desiredDate;
+    const title = `${offer.name} · ${publicSchoolTitle(school)}`;
+    return {
+      amount: selectedPrice,
+      customerEmail: booking.customerEmail,
+      title,
+      order: {
+        customerName: `${booking.customerFirstname} ${booking.customerLastname}`.trim(),
+        customerEmail: booking.customerEmail,
+        customerPhone: booking.customerPhone,
+        productType: 'booking',
+        city: school.city,
+        spot: school.spot,
+        amount: selectedPrice,
+        title,
+        metadata: {
+          schoolId: school.id,
+          formulaId: offer.id,
+          desiredDate,
+          resumeToken: resumeOrder?.resumeToken || ''
+        }
+      },
+      metadata: {
+        type: 'booking',
+        schoolId: school.id,
+        formulaId: offer.id,
+        desiredDate,
+        resumeToken: resumeOrder?.resumeToken || ''
+      }
+    };
+  }
+
+  function bookingPaymentPayload() {
+    const desiredDate = booking.dateFlexible ? 'date à définir' : booking.desiredDate;
+    const customerName = `${booking.customerFirstname} ${booking.customerLastname}`.trim();
+    const title = `${offer.name} · ${publicSchoolTitle(school)}`;
+    return {
+      amount: selectedPrice,
+      customerEmail: booking.customerEmail,
+      customerName,
+      title,
+      order: {
+        customerName,
+        customerEmail: booking.customerEmail,
+        customerPhone: booking.customerPhone,
+        productType: 'booking',
+        city: school.city,
+        spot: school.spot,
+        amount: selectedPrice,
+        title,
+        metadata: {
+          schoolId: school.id,
+          schoolName: publicSchoolTitle(school),
+          offerId: offer.id,
+          offerName: offer.name,
+          formulaId: offer.id,
+          selectedDate: desiredDate,
+          desiredDate,
+          resumeToken: resumeOrder?.resumeToken || ''
+        }
+      },
+      metadata: {
+        type: 'booking',
+        schoolId: school.id,
+        schoolName: publicSchoolTitle(school),
+        offerId: offer.id,
+        offerName: offer.name,
+        formulaId: offer.id,
+        selectedDate: desiredDate,
+        desiredDate,
+        resumeToken: resumeOrder?.resumeToken || ''
+      }
+    };
+  }
+
+  function giftCardCheckoutPayload() {
+    const title = 'Carte cadeau Spotykite';
+    return {
+      amount: 199,
+      customerEmail: giftCard.buyerEmail,
+      title,
+      order: {
+        customerName: `${giftCard.buyerFirstname} ${giftCard.buyerLastname}`.trim(),
+        customerEmail: giftCard.buyerEmail,
+        customerPhone: giftCard.buyerPhone,
+        productType: 'gift_card',
+        amount: 199,
+        title,
+        metadata: {
+          recipientName: giftRecipientName,
+          recipientEmail: giftRecipientEmail,
+          message: giftCard.message,
+          resumeToken: resumeOrder?.resumeToken || ''
+        }
+      },
+      metadata: {
+        type: 'gift_card',
         recipientName: giftRecipientName,
         recipientEmail: giftRecipientEmail,
-        message: giftCard.message,
-        amount: 199,
-        paymentStatus: 'paid',
-        paymentProvider: 'stripe',
-        resumeToken: resumeOrder?.resumeToken
-      });
-      setCreated(result);
-      setStep(4);
-      return;
-    }
-    const result = await api.createBooking({
-      ...booking,
-      offerId: offer.id,
-      schoolId: school.id,
-      region: school.region,
-      level: offer.level,
-      desiredDate: booking.dateFlexible ? 'date à définir' : booking.desiredDate,
-      resumeToken: resumeOrder?.resumeToken
-    });
-    setCreated(result);
-    setStep(4);
+        resumeToken: resumeOrder?.resumeToken || ''
+      }
+    };
   }
 
   return (
@@ -248,8 +391,8 @@ export default function Reservation() {
       <section className="section">
         <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
           <div className="card p-6 sm:p-8">
-            <StepNav current={step} isGiftCard={isGiftCard} />
-            <form onSubmit={submit} className="mt-8 grid gap-6">
+            {isGiftCard && <StepNav current={step} isGiftCard />}
+            <form onSubmit={isGiftCard ? submit : (event) => event.preventDefault()} className="mt-8 grid gap-6">
               {isGiftCard && step === 1 && (
                 <div className="grid gap-4">
                   <h2 className="text-4xl font-black text-navy">Étape 1 : Informations acheteur</h2>
@@ -301,8 +444,9 @@ export default function Reservation() {
                   </div>
                   <div className="flex flex-wrap gap-3">
                     <button type="button" className="btn-secondary justify-center" onClick={() => setStep(2)}>Retour</button>
-                    <button type="submit" className="btn-primary justify-center">Confirmer et passer au paiement</button>
+                    <button type="submit" className="btn-primary justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={paymentLoading}>{paymentLoading ? 'Redirection vers Stripe...' : 'Payer'}</button>
                   </div>
+                  {paymentError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{paymentError}</p>}
                 </div>
               )}
 
@@ -318,83 +462,77 @@ export default function Reservation() {
                 </div>
               )}
 
-              {!isGiftCard && step === 1 && (
-                <div className="grid gap-4">
-                  <h2 className="text-4xl font-black text-navy">Étape 1 : Coordonnées</h2>
+              {!isGiftCard && (
+                <div className="grid gap-6">
+                  <div>
+                    <h2 className="text-4xl font-black text-navy">Finaliser votre réservation</h2>
+                    <p className="mt-2 text-sm font-bold text-muted">Vos coordonnées suffisent pour lancer le paiement sécurisé Stripe.</p>
+                  </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <input className="field" required placeholder="Prénom" value={booking.customerFirstname} onChange={(event) => setBooking({ ...booking, customerFirstname: event.target.value })} />
                     <input className="field" required placeholder="Nom" value={booking.customerLastname} onChange={(event) => setBooking({ ...booking, customerLastname: event.target.value })} />
                     <input className="field sm:col-span-2" required type="email" placeholder="Email" value={booking.customerEmail} onChange={(event) => setBooking({ ...booking, customerEmail: event.target.value })} />
                     <input className="field sm:col-span-2" required placeholder="Téléphone" value={booking.customerPhone} onChange={(event) => setBooking({ ...booking, customerPhone: event.target.value })} />
                   </div>
-                  <button type="button" className="btn-primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-60 sm:w-fit" disabled={!canContinueContact} onClick={() => setStep(2)}>Continuer</button>
-                </div>
-              )}
 
-              {!isGiftCard && step === 2 && (
-                <div className="grid gap-4">
-                  <h2 className="text-4xl font-black text-navy">Étape 2 : Date</h2>
-                  {availabilities.length > 0 ? (
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {availabilities.map((item) => {
-                        const isAvailable = item.status === 'available' && Number(item.availablePlaces) > 0;
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            disabled={!isAvailable || booking.dateFlexible}
-                            onClick={() => setBooking({ ...booking, desiredDate: item.date, dateFlexible: false })}
-                            className={`rounded-2xl border p-4 text-left transition ${booking.desiredDate === item.date && !booking.dateFlexible ? 'border-turquoise bg-sky text-navy' : isAvailable ? 'border-turquoise/35 bg-white text-navy hover:border-turquoise' : 'cursor-not-allowed border-border bg-bg text-muted opacity-60'}`}
-                          >
-                            <span className="block text-lg font-black">{formatReservationDate(item.date)}</span>
-                            {item.appliedPrice && (
-                              <span className="mt-1 block text-sm font-black text-ocean">
-                                {item.normalPrice && item.normalPrice !== item.appliedPrice ? <><span className="text-muted line-through">{item.normalPrice} €</span> {item.appliedPrice} €</> : `${item.appliedPrice} €`}
-                              </span>
-                            )}
-                            <span className="mt-1 block text-xs font-black uppercase">{isAvailable ? `${item.availablePlaces} place${Number(item.availablePlaces) > 1 ? 's' : ''} disponible${Number(item.availablePlaces) > 1 ? 's' : ''}` : 'Complet'}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <input className="field" type="date" disabled={booking.dateFlexible} required={!booking.dateFlexible} value={booking.desiredDate} onChange={(event) => setBooking({ ...booking, desiredDate: event.target.value })} />
-                  )}
-                  <label className="flex items-center gap-3 rounded-2xl border border-border bg-bg p-4 text-sm font-black text-navy">
-                    <input type="checkbox" checked={booking.dateFlexible} onChange={(event) => setBooking({ ...booking, dateFlexible: event.target.checked, desiredDate: event.target.checked ? '' : booking.desiredDate })} />
-                    Je souhaite définir la date avec l’école
-                  </label>
-                  <div className="flex flex-wrap gap-3">
-                    <button type="button" className="btn-secondary justify-center" onClick={() => setStep(1)}>Retour</button>
-                    <button type="button" className="btn-primary justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={!canContinueDate} onClick={() => setStep(3)}>Voir le récapitulatif</button>
+                  <div className="grid gap-3">
+                    <label className="flex items-center gap-3 rounded-2xl border border-border bg-bg p-4 text-sm font-black text-navy">
+                      <input type="checkbox" checked={booking.dateFlexible} onChange={(event) => setBooking({ ...booking, dateFlexible: event.target.checked, desiredDate: event.target.checked ? '' : booking.desiredDate })} />
+                      Définir la date avec l’école après paiement
+                    </label>
+                    {!booking.dateFlexible && (
+                      availabilities.length > 0 ? (
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          {availabilities.map((item) => {
+                            const isAvailable = item.status === 'available' && Number(item.availablePlaces) > 0;
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                                disabled={!isAvailable}
+                                onClick={() => setBooking({ ...booking, desiredDate: item.date, dateFlexible: false })}
+                                className={`rounded-2xl border p-4 text-left transition ${booking.desiredDate === item.date ? 'border-turquoise bg-sky text-navy' : isAvailable ? 'border-turquoise/35 bg-white text-navy hover:border-turquoise' : 'cursor-not-allowed border-border bg-bg text-muted opacity-60'}`}
+                              >
+                                <span className="block text-lg font-black">{formatReservationDate(item.date)}</span>
+                                {item.appliedPrice && <span className="mt-1 block text-sm font-black text-ocean">{item.normalPrice && item.normalPrice !== item.appliedPrice ? <><span className="text-muted line-through">{item.normalPrice} €</span> {item.appliedPrice} €</> : `${item.appliedPrice} €`}</span>}
+                                <span className="mt-1 block text-xs font-black uppercase">{isAvailable ? `${item.availablePlaces} place${Number(item.availablePlaces) > 1 ? 's' : ''} disponible${Number(item.availablePlaces) > 1 ? 's' : ''}` : 'Complet'}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <input className="field" type="date" required value={booking.desiredDate} onChange={(event) => setBooking({ ...booking, desiredDate: event.target.value })} />
+                      )
+                    )}
                   </div>
-                </div>
-              )}
 
-              {!isGiftCard && step === 3 && (
-                <div className="grid gap-4">
-                  <h2 className="text-4xl font-black text-navy">Étape 3 : Récapitulatif</h2>
                   <div className="grid gap-3">
                     <SummaryRow label="Spot" value={school.spot || school.city} />
                     <SummaryRow label="Formule" value={offer.name} />
                     <SummaryRow label="Date" value={booking.dateFlexible ? 'Date à définir' : booking.desiredDate} />
                     <SummaryRow label="Prix" value={`${selectedPrice} €${selectedAvailability?.specialOfferName ? ` · ${selectedAvailability.specialOfferName}` : ''}`} />
                   </div>
-                  <div className="flex flex-wrap gap-3">
-                    <button type="button" className="btn-secondary justify-center" onClick={() => setStep(2)}>Retour</button>
-                    <button type="submit" className="btn-primary justify-center">Confirmer et passer au paiement</button>
+                  <div className="rounded-2xl border border-border bg-white p-4">
+                    <h3 className="mb-3 text-xl font-black text-navy">Paiement</h3>
+                    {!import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY === 'pk_test_xxx' ? (
+                      <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+                        VITE_STRIPE_PUBLISHABLE_KEY doit être configurée avec votre clé publique Stripe.
+                      </p>
+                    ) : paymentIntentLoading ? (
+                      <p className="text-sm font-bold text-muted">Préparation du paiement sécurisé...</p>
+                    ) : paymentIntent?.clientSecret ? (
+                      <Elements stripe={stripePromise} options={{ clientSecret: paymentIntent.clientSecret, appearance: { theme: 'stripe' } }}>
+                        <InlinePaymentForm
+                          disabled={!canContinueContact || !canContinueDate}
+                          paymentIntentId={paymentIntent.paymentIntentId}
+                          onSuccess={(paymentIntentId) => navigate(`/paiement-reussi?payment_intent=${encodeURIComponent(paymentIntentId)}`)}
+                        />
+                      </Elements>
+                    ) : (
+                      <p className="text-sm font-bold text-muted">Complétez vos coordonnées pour afficher le paiement.</p>
+                    )}
                   </div>
-                </div>
-              )}
-
-              {!isGiftCard && step === 4 && (
-                <div className="grid gap-4">
-                  <h2 className="text-4xl font-black text-navy">Étape 4 : Paiement</h2>
-                  <div className="rounded-2xl border border-turquoise/30 bg-sky/50 p-5">
-                    <p className="font-black text-navy">Réservation créée{created?.id ? ` #${created.id}` : ''}.</p>
-                    <p className="mt-2 text-sm font-bold text-muted">Le paiement sécurisé sera finalisé dans l’étape de paiement Spotykite.</p>
-                  </div>
-                  <Link to="/ecoles" className="btn-secondary justify-center sm:w-fit">Retour aux écoles</Link>
+                  {paymentError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{paymentError}</p>}
                 </div>
               )}
               <p className="text-xs font-bold leading-relaxed text-muted">
@@ -425,6 +563,43 @@ export default function Reservation() {
         </div>
       </section>
     </main>
+  );
+}
+
+function InlinePaymentForm({ disabled, paymentIntentId, onSuccess }) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState('');
+
+  async function pay() {
+    if (!stripe || !elements || disabled) return;
+    setStatus('loading');
+    setError('');
+    const result = await stripe.confirmPayment({
+      elements,
+      redirect: 'if_required'
+    });
+
+    if (result.error) {
+      setError(result.error.message || 'Le paiement a échoué.');
+      setStatus('idle');
+      return;
+    }
+
+    const paidIntentId = result.paymentIntent?.id || paymentIntentId;
+    setStatus('paid');
+    onSuccess(paidIntentId);
+  }
+
+  return (
+    <div className="grid gap-4">
+      <PaymentElement />
+      {error && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p>}
+      <button type="button" className="btn-primary justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={!stripe || !elements || disabled || status === 'loading'} onClick={pay}>
+        {status === 'loading' ? 'Paiement en cours...' : 'Payer et réserver'}
+      </button>
+    </div>
   );
 }
 

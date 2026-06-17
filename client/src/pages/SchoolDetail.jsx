@@ -157,7 +157,7 @@ function DesktopActionCard({ school, formulas, selectedFormula, selectedFormulaI
 }
 
 function MobileActionBar({ school, formulas, selectedFormula, selectedFormulaId, onSelectFormula, canBook, open, onOpen, onClose }) {
-  const label = canBook ? `Réservez votre stage à ${school.city}` : publicSchoolLocation(school);
+  const label = canBook ? (selectedFormula ? `${selectedFormula.name} · ${selectedFormula.price} €` : `Réservez à ${school.city}`) : publicSchoolLocation(school);
   return (
     <>
       <button
@@ -183,7 +183,7 @@ function MobileActionBar({ school, formulas, selectedFormula, selectedFormulaId,
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <p className="eyebrow text-primary">{canBook ? 'Réservation' : 'Disponibilités'}</p>
-                  <h2 className="text-2xl font-black text-navy">{canBook ? 'Réserver mon stage' : 'Recevoir les disponibilités'}</h2>
+                  <h2 className="text-2xl font-black text-navy">{canBook ? 'Réserver' : 'Recevoir les disponibilités'}</h2>
                 </div>
                 <button type="button" onClick={onClose} className="inline-grid h-11 w-11 shrink-0 place-items-center rounded-full border border-border bg-bg text-navy" aria-label="Fermer">
                   <X size={20} />
@@ -220,36 +220,32 @@ function ActionPanelContent({ school, formulas, selectedFormula, selectedFormula
 
   return (
     <div>
-      <h2 className={`${compact ? 'text-2xl' : 'text-3xl'} font-black text-navy`}>Réserver avec Spotykite</h2>
-      <p className="mt-3 text-sm font-bold leading-relaxed text-muted">
-        Choisissez votre formule et poursuivez dans le tunnel sécurisé Spotykite.
-      </p>
-      <div className="mt-5 grid gap-2">
-        {(formulas || []).map((formula) => (
-          <button
-            key={formula.id}
-            type="button"
-            onClick={() => onSelectFormula(String(formula.id))}
-            className={`rounded-2xl border p-4 text-left transition ${String(formula.id) === String(selectedFormulaId) ? 'border-turquoise bg-sky text-navy' : 'border-border bg-bg text-muted hover:border-turquoise/60'}`}
-          >
-            <span className="block font-black">{formula.name}</span>
-            <span className="mt-1 block text-sm font-bold">{formula.duration} · {formula.level}</span>
-            <span className="mt-2 block text-lg font-black text-primary">{formula.price ? `${formula.price} €` : 'Sur demande'}</span>
-          </button>
-        ))}
+      <h2 className={`${compact ? 'text-2xl' : 'text-3xl'} font-black text-navy`}>Réserver</h2>
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-2 text-sm font-black text-navy">
+          Choisir une formule
+          <select className="field" value={selectedFormulaId} onChange={(event) => onSelectFormula(event.target.value)}>
+            {(formulas || []).map((formula) => (
+              <option key={formula.id} value={formula.id}>
+                {formula.name} · {formula.price ? `${formula.price} €` : 'Sur demande'}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="rounded-2xl border border-turquoise/25 bg-sky/40 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-ocean">Prix</p>
+          <p className="mt-1 text-3xl font-black text-primary">{selectedFormula?.price ? `${selectedFormula.price} €` : 'Sur demande'}</p>
+          {selectedFormula && <p className="mt-1 text-sm font-bold text-muted">{selectedFormula.duration} · {selectedFormula.level}</p>}
+        </div>
       </div>
-      <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary mt-5 w-full justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
-        Réserver mon stage
+      <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary mt-4 w-full justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
+        Réserver maintenant
       </Link>
       <Link to="/carte-cadeau" className="btn-secondary mt-3 w-full justify-center"><Gift size={18} /> Offrir un stage</Link>
-      <div className="mt-5 grid gap-2 rounded-2xl border border-turquoise/25 bg-sky/40 p-4">
-        {['Paiement sécurisé', 'Report météo possible', 'Accompagnement Spotykite'].map((item) => (
-          <p key={item} className="flex items-center gap-2 text-sm font-black text-navy">
-            <CheckCircle2 size={17} className="shrink-0 text-turquoise" />
-            {item}
-          </p>
-        ))}
-      </div>
+      <p className="mt-3 flex items-center gap-2 text-sm font-black text-navy">
+        <CheckCircle2 size={17} className="shrink-0 text-turquoise" />
+        Paiement sécurisé Stripe
+      </p>
     </div>
   );
 }
@@ -444,9 +440,9 @@ function FormulaSection({ school, selectedFormulaId, onReserve, canBook }) {
               <p className="mt-4 text-sm font-bold text-muted">
                 Prix public : {formula.publicPrice} €{formula.spotykitePrice ? ` · Prix Spotykite : ${formula.spotykitePrice} €` : ''}
               </p>
-              {canBook ? <button type="button" onClick={() => onReserve(formula.id)} className="btn-primary mt-5 w-full justify-center">
+              {canBook ? <button type="button" onClick={() => onReserve(formula.id)} className={`mt-5 w-full justify-center ${String(formula.id) === selectedFormulaId ? 'btn-secondary' : 'btn-primary'}`}>
                 <span className="lg:hidden">Choisir cette formule</span>
-                <span className="hidden lg:inline">Réserver</span>
+                <span className="hidden lg:inline">{String(formula.id) === selectedFormulaId ? 'Formule sélectionnée' : 'Choisir cette formule'}</span>
               </button> : (
                 <p className="mt-5 rounded-2xl border border-border bg-bg p-4 text-sm font-bold text-muted">Demandez vos disponibilités pour cette formule et notre équipe vous accompagne.</p>
               )}
