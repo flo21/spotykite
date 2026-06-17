@@ -47,9 +47,9 @@ function getStripeClient() {
 
 console.log('[env] STRIPE_SECRET_KEY', stripeSecretKeyStatus());
 console.log('[env] STRIPE_WEBHOOK_SECRET', process.env.STRIPE_WEBHOOK_SECRET ? 'OK' : 'MISSING');
-console.log('RESEND_API_KEY:', process.env.RESEND_API_KEY ? 'OK' : 'MISSING');
-console.log('MAIL_FROM:', process.env.MAIL_FROM);
-console.log('SPOTYKITE_ADMIN_EMAIL:', process.env.SPOTYKITE_ADMIN_EMAIL);
+console.log('[env] RESEND_API_KEY', process.env.RESEND_API_KEY ? 'OK' : 'MISSING');
+console.log('[env] MAIL_FROM', process.env.MAIL_FROM);
+console.log('[env] SPOTYKITE_ADMIN_EMAIL', process.env.SPOTYKITE_ADMIN_EMAIL);
 console.log('[stripe] Dashboard webhook events requis: checkout.session.completed, payment_intent.succeeded');
 
 if (!fs.existsSync(uploadsDir)) {
@@ -72,10 +72,10 @@ app.use(cors({
 }));
 
 app.post('/api/payments/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  console.log('WEBHOOK STRIPE RECU');
+  console.log('[stripe:webhook] received');
   const stripe = getStripeClient();
   if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
-    console.error('Stripe webhook config error', {
+    console.error('[stripe:webhook] config error', {
       stripeSecretKeyStatus: stripeSecretKeyStatus(),
       webhookSecretConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET)
     });
@@ -85,8 +85,9 @@ app.post('/api/payments/stripe-webhook', express.raw({ type: 'application/json' 
   let event;
   try {
     event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+    console.log('[stripe:webhook] signature verified');
   } catch (error) {
-    console.error('Stripe webhook signature error', {
+    console.error('[stripe:webhook] signature error', {
       message: error.message,
       stripeSignatureHeaderPresent: Boolean(req.headers['stripe-signature']),
       webhookSecretConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET)
@@ -94,31 +95,40 @@ app.post('/api/payments/stripe-webhook', express.raw({ type: 'application/json' 
     return res.status(400).send(`Webhook Error: ${error.message}`);
   }
 
-  console.log('EVENT TYPE:', event.type);
+  console.log('[stripe:webhook] event type', event.type);
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    console.log('Webhook checkout.session.completed reçu');
-    console.log('SESSION STRIPE:', session.id);
-    console.log('CUSTOMER EMAIL:', session.customer_details?.email || session.customer_email);
-    console.log('METADATA:', session.metadata);
+    console.log('[stripe:webhook] checkout.session.completed', {
+      sessionId: session.id,
+      customerEmail: session.customer_email || '',
+      customerDetailsEmail: session.customer_details?.email || '',
+      finalEmailCandidate: getStripePaymentEmailCandidate(session),
+      metadata: session.metadata || {}
+    });
     const paidOrder = markStripeCheckoutSessionPaid(session);
     if (paidOrder) {
       await sendStripePaymentEmails(paidOrder, session);
+    } else {
+      console.error('[stripe:webhook] no order found for checkout session', { sessionId: session.id });
     }
   }
 
   if (event.type === 'payment_intent.succeeded') {
     const paymentIntent = event.data.object;
-    console.log('Webhook payment_intent.succeeded reçu');
-    console.log('PAYMENT_INTENT:', paymentIntent.id);
-    console.log('PAYMENT_INTENT_AMOUNT:', paymentIntent.amount_received ?? paymentIntent.amount);
-    console.log('METADATA:', paymentIntent.metadata);
-    console.log('PAYMENT INTENT METADATA:', paymentIntent.metadata);
-    console.log('CUSTOMER EMAIL:', paymentIntent.metadata?.customerEmail);
+    console.log('[stripe:webhook] payment_intent.succeeded', {
+      paymentIntentId: paymentIntent.id,
+      amount: paymentIntent.amount_received ?? paymentIntent.amount,
+      receiptEmail: paymentIntent.receipt_email || '',
+      metadataCustomerEmail: paymentIntent.metadata?.customerEmail || '',
+      finalEmailCandidate: getStripePaymentEmailCandidate(paymentIntent),
+      metadata: paymentIntent.metadata || {}
+    });
     const paidOrder = markStripePaymentIntentPaid(paymentIntent);
     if (paidOrder) {
       await sendStripePaymentEmails(paidOrder, paymentIntent);
+    } else {
+      console.error('[stripe:webhook] no order found for payment intent', { paymentIntentId: paymentIntent.id });
     }
   }
 
@@ -342,12 +352,13 @@ app.delete('/api/orders/:id', (req, res) => {
 
 app.post('/api/payments/create-checkout-session', async (req, res) => {
   const stripeKeyStatus = stripeSecretKeyStatus();
-  console.log('[payments] STRIPE_SECRET_KEY', stripeKeyStatus);
+  console.log('[stripe:create-checkout-session] start', { stripeSecretKeyStatus: stripeKeyStatus });
   const stripe = getStripeClient();
   if (!stripe) {
     const error = stripeKeyStatus === 'PLACEHOLDER'
       ? 'STRIPE_SECRET_KEY is still set to the placeholder sk_test_xxx'
       : 'STRIPE_SECRET_KEY is not configured';
+    console.error('[stripe:create-checkout-session] config error', { error });
     return res.status(500).json({ error });
   }
 
@@ -368,10 +379,11 @@ app.post('/api/payments/create-checkout-session', async (req, res) => {
     });
     if (!savedOrder) return res.status(404).json({ error: 'Order not found' });
     if (savedOrder.payment_status === 'paid') return res.status(409).json({ error: 'Order already paid' });
-    console.log('Commande créée', {
+    console.log('[stripe:create-checkout-session] order ready', {
       orderId: savedOrder.id,
       orderNumber: savedOrder.order_number,
-      customerEmail
+      customerEmail,
+      metadata
     });
 
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -409,21 +421,30 @@ app.post('/api/payments/create-checkout-session', async (req, res) => {
       WHERE id = ?
     `, [checkoutSession.id, checkoutSession.id, JSON.stringify({ ...metadata, stripeCheckoutUrl: checkoutSession.url }), savedOrder.id]);
 
+    console.log('[stripe:create-checkout-session] created', {
+      sessionId: checkoutSession.id,
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.order_number,
+      customerEmail,
+      metadata: checkoutSession.metadata
+    });
+
     res.status(201).json({ checkoutUrl: checkoutSession.url, sessionId: checkoutSession.id, orderId: savedOrder.id });
   } catch (error) {
-    console.error('Stripe checkout session error', error);
+    console.error('[stripe:create-checkout-session] error', error);
     res.status(500).json({ error: 'Impossible de créer la session Stripe' });
   }
 });
 
 app.post('/api/payments/create-payment-intent', async (req, res) => {
   const stripeKeyStatus = stripeSecretKeyStatus();
-  console.log('[payments] STRIPE_SECRET_KEY', stripeKeyStatus);
+  console.log('[stripe:create-payment-intent] start', { stripeSecretKeyStatus: stripeKeyStatus });
   const stripe = getStripeClient();
   if (!stripe) {
     const error = stripeKeyStatus === 'PLACEHOLDER'
       ? 'STRIPE_SECRET_KEY is still set to the placeholder sk_test_xxx'
       : 'STRIPE_SECRET_KEY is not configured';
+    console.error('[stripe:create-payment-intent] config error', { error });
     return res.status(500).json({ error });
   }
 
@@ -453,6 +474,12 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       offerName: metadata.offerName || title || savedOrder.title || '',
       schoolName: metadata.schoolName || ''
     });
+    console.log('[stripe:create-payment-intent] metadata prepared', {
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.order_number,
+      customerEmail,
+      paymentMetadata
+    });
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(numericAmount * 100),
@@ -472,10 +499,12 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       WHERE id = ?
     `, [paymentIntent.id, JSON.stringify({ ...metadata, ...paymentMetadata, stripePaymentIntent: paymentIntent.id }), savedOrder.id]);
 
-    console.log('PaymentIntent créé', {
+    console.log('[stripe:create-payment-intent] created', {
       orderId: savedOrder.id,
       orderNumber: savedOrder.order_number,
       paymentIntentId: paymentIntent.id,
+      receiptEmail: paymentIntent.receipt_email || '',
+      metadataCustomerEmail: paymentIntent.metadata?.customerEmail || '',
       customerEmail
     });
 
@@ -486,7 +515,7 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       paymentIntentId: paymentIntent.id
     });
   } catch (error) {
-    console.error('Stripe payment intent error', error);
+    console.error('[stripe:create-payment-intent] error', error);
     res.status(500).json({ error: 'Impossible de préparer le paiement Stripe' });
   }
 });
@@ -568,6 +597,102 @@ app.get('/api/payments/checkout-session/:sessionId', async (req, res) => {
     paymentStatus: order.payment_status,
     paid: order.payment_status === 'paid'
   });
+});
+
+app.post('/api/payments/test-confirmation-email', async (req, res) => {
+  const configuredSecret = process.env.PAYMENT_EMAIL_TEST_SECRET;
+  const providedSecret = req.headers['x-spotykite-test-secret'] || req.body?.secret;
+  if (!configuredSecret || providedSecret !== configuredSecret) {
+    console.warn('[email:test] unauthorized attempt', {
+      configured: Boolean(configuredSecret),
+      provided: Boolean(providedSecret)
+    });
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  try {
+    const customerEmail = req.body.customerEmail || req.body.email;
+    if (!customerEmail) {
+      console.error('[email:test] missing customerEmail');
+      return res.status(400).json({ error: 'customerEmail is required' });
+    }
+
+    const metadata = stringifyMetadata({
+      type: 'email_test',
+      customerEmail,
+      customerName: req.body.customerName || 'Client Test Spotykite',
+      orderNumber: req.body.orderNumber || '',
+      schoolName: req.body.schoolName || 'École test Spotykite',
+      offerName: req.body.offerName || 'Stage test Spotykite',
+      selectedDate: req.body.selectedDate || 'date à définir',
+      desiredDate: req.body.selectedDate || req.body.desiredDate || 'date à définir',
+      schoolPhone: req.body.schoolPhone || '+33184808080',
+      schoolEmail: req.body.schoolEmail || process.env.SPOTYKITE_ADMIN_EMAIL || '',
+      schoolAddress: req.body.schoolAddress || 'Adresse test',
+      schoolWebsite: req.body.schoolWebsite || frontendUrl
+    });
+
+    let order = req.body.orderId
+      ? row('SELECT * FROM orders WHERE id = ? OR order_number = ?', [req.body.orderId, req.body.orderId])
+      : null;
+
+    if (!order) {
+      order = createPendingStripeOrder({
+        customerName: metadata.customerName,
+        customerEmail,
+        customerPhone: req.body.customerPhone || '',
+        productType: 'email_test',
+        city: req.body.city || 'Test',
+        spot: req.body.spot || 'Spotykite',
+        amount: Number(req.body.amount || 1),
+        title: metadata.offerName,
+        metadata
+      });
+      run(`
+        UPDATE orders
+        SET status = 'payé',
+          payment_status = 'paid',
+          payment_provider = 'test',
+          payment_id = ?,
+          metadata = ?,
+          paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [`test_pi_${Date.now()}`, JSON.stringify({ ...metadata, orderNumber: order.order_number }), order.id]);
+      order = row('SELECT * FROM orders WHERE id = ?', [order.id]);
+    }
+
+    const mockPayment = {
+      id: req.body.paymentIntentId || `test_pi_${Date.now()}`,
+      amount_received: Math.round(Number(req.body.amount || order.amount || 1) * 100),
+      receipt_email: customerEmail,
+      metadata: {
+        ...parseMetadata(order.metadata),
+        ...metadata,
+        customerEmail,
+        orderId: String(order.id),
+        orderNumber: order.order_number
+      }
+    };
+
+    console.log('[email:test] sending confirmation email', {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      customerEmail,
+      adminEmail: process.env.SPOTYKITE_ADMIN_EMAIL
+    });
+    const results = await sendStripePaymentEmails(order, mockPayment);
+    res.json({
+      ok: true,
+      orderId: order.id,
+      orderNumber: order.order_number,
+      customerEmail,
+      results
+    });
+  } catch (error) {
+    console.error('[email:test] error', serializeError(error));
+    res.status(500).json({ error: 'Impossible d’envoyer l’email de test', details: serializeError(error) });
+  }
 });
 
 app.get('/api/prospects', (_req, res) => {
@@ -1758,36 +1883,70 @@ function mailFrom() {
   return process.env.MAIL_FROM || 'Spotykite <onboarding@resend.dev>';
 }
 
+function getStripePaymentEmailCandidate(stripePayment = {}) {
+  return stripePayment.customer_details?.email
+    || stripePayment.customer_email
+    || stripePayment.receipt_email
+    || stripePayment.metadata?.customerEmail
+    || stripePayment.metadata?.customer_email
+    || '';
+}
+
+function serializeError(error) {
+  if (!error) return null;
+  return {
+    name: error.name,
+    message: error.message,
+    statusCode: error.statusCode,
+    code: error.code,
+    type: error.type,
+    stack: error.stack,
+    raw: error.raw,
+    response: error.response
+  };
+}
+
 async function sendStripePaymentEmails(order, session) {
   const emailData = buildStripePaymentEmailData(order, session);
-  console.log('Tentative envoi Resend', {
+  console.log('[email] confirmation flow start', {
     orderId: order.id,
+    orderNumber: order.order_number,
     sessionId: session.id,
-    customerEmail: emailData.customerEmail,
+    stripeEmailCandidate: getStripePaymentEmailCandidate(session),
+    finalCustomerEmail: emailData.customerEmail,
     adminEmail: process.env.SPOTYKITE_ADMIN_EMAIL
   });
   const emailResults = await Promise.allSettled([
     sendCustomerPaymentEmail(order, emailData),
     sendAdminPaymentEmail(order, emailData)
   ]);
-  console.log('RESULTATS ENVOI EMAILS STRIPE:', emailResults);
+  console.log('[email] confirmation flow result', emailResults);
+  return emailResults;
 }
 
 async function sendCustomerPaymentEmail(order, emailData) {
   if (order.customer_email_sent_at) {
-    console.log('Email client déjà envoyé', { orderId: order.id, sentAt: order.customer_email_sent_at });
-    return;
+    console.log('[email:client] skipped already sent', { orderId: order.id, sentAt: order.customer_email_sent_at });
+    return { status: 'skipped', reason: 'already_sent', sentAt: order.customer_email_sent_at };
   }
   if (!emailData.customerEmail) {
-    console.warn('Email client non envoyé: email client manquant', { orderId: order.id, sessionId: emailData.sessionId });
-    return;
+    console.error('[email:client] missing customer email, email not sent', {
+      orderId: order.id,
+      orderNumber: emailData.orderNumber,
+      sessionId: emailData.sessionId,
+      metadata: emailData.metadata
+    });
+    return { status: 'skipped', reason: 'missing_customer_email' };
   }
 
-  console.log('Client email:', emailData.customerEmail);
-  console.log('ENVOI EMAIL CLIENT...');
+  console.log('[email:client] before send', {
+    orderId: order.id,
+    orderNumber: emailData.orderNumber,
+    to: emailData.customerEmail,
+    from: mailFrom()
+  });
 
   try {
-    console.log('AVANT ENVOI EMAIL CLIENT');
     const reservationPdf = await createReservationPdf(emailData);
     const resultClient = await getResendClient().emails.send({
       from: mailFrom(),
@@ -1801,57 +1960,61 @@ async function sendCustomerPaymentEmail(order, emailData) {
         }
       ]
     });
-    console.log('EMAIL CLIENT RESULT:', resultClient);
-    console.log('RESEND CLIENT RESULT:', resultClient);
+    console.log('[email:client] resend result', resultClient);
     if (resultClient?.error) {
       throw resultClient.error;
     }
     run('UPDATE orders SET customer_email_sent_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
-    console.log('Email client envoyé', { orderId: order.id, to: emailData.customerEmail });
+    console.log('[email:client] sent', { orderId: order.id, to: emailData.customerEmail });
+    return { status: 'sent', to: emailData.customerEmail, result: resultClient };
   } catch (error) {
-    console.error('Erreur email Resend', {
-      type: 'client',
+    console.error('[email:client] resend error', {
       orderId: order.id,
       to: emailData.customerEmail,
-      error
+      error: serializeError(error)
     });
+    return { status: 'error', to: emailData.customerEmail, error: serializeError(error) };
   }
 }
 
 async function sendAdminPaymentEmail(order, emailData) {
   if (order.admin_email_sent_at) {
-    console.log('Email admin déjà envoyé', { orderId: order.id, sentAt: order.admin_email_sent_at });
-    return;
+    console.log('[email:admin] skipped already sent', { orderId: order.id, sentAt: order.admin_email_sent_at });
+    return { status: 'skipped', reason: 'already_sent', sentAt: order.admin_email_sent_at };
   }
   const adminEmail = process.env.SPOTYKITE_ADMIN_EMAIL;
   if (!adminEmail) {
-    console.warn('Email Spotykite non envoyé: SPOTYKITE_ADMIN_EMAIL manquant', { orderId: order.id, sessionId: emailData.sessionId });
-    return;
+    console.error('[email:admin] missing SPOTYKITE_ADMIN_EMAIL, email not sent', { orderId: order.id, sessionId: emailData.sessionId });
+    return { status: 'skipped', reason: 'missing_admin_email' };
   }
 
   try {
-    console.log('ENVOI EMAIL ADMIN...');
-    console.log('AVANT ENVOI EMAIL ADMIN');
+    console.log('[email:admin] before send', {
+      orderId: order.id,
+      orderNumber: emailData.orderNumber,
+      to: adminEmail,
+      from: mailFrom()
+    });
     const resultAdmin = await getResendClient().emails.send({
       from: mailFrom(),
       to: adminEmail,
       subject: 'Nouvelle réservation payée sur Spotykite',
       html: paymentAdminHtml(emailData)
     });
-    console.log('EMAIL ADMIN RESULT:', resultAdmin);
-    console.log('RESEND ADMIN RESULT:', resultAdmin);
+    console.log('[email:admin] resend result', resultAdmin);
     if (resultAdmin?.error) {
       throw resultAdmin.error;
     }
     run('UPDATE orders SET admin_email_sent_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
-    console.log('Email admin envoyé', { orderId: order.id, to: adminEmail });
+    console.log('[email:admin] sent', { orderId: order.id, to: adminEmail });
+    return { status: 'sent', to: adminEmail, result: resultAdmin };
   } catch (error) {
-    console.error('Erreur email Resend', {
-      type: 'admin',
+    console.error('[email:admin] resend error', {
       orderId: order.id,
       to: adminEmail,
-      error
+      error: serializeError(error)
     });
+    return { status: 'error', to: adminEmail, error: serializeError(error) };
   }
 }
 

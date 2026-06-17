@@ -45,22 +45,35 @@ export default function PaymentSuccess() {
     };
   }, [sessionId, paymentIntentId]);
 
-  const isPaid = status.state === 'paid';
+  const orderNumber = status.payment?.orderNumber;
 
   return (
     <main className="section pt-12">
-      <div className="card mx-auto max-w-2xl p-8 text-center">
+      <div className="card mx-auto max-w-xl px-6 py-10 text-center sm:px-10 sm:py-12">
         <CheckCircle2 className="mx-auto text-primary" size={48} />
-        <p className="eyebrow mt-5 text-primary">Paiement Stripe reçu</p>
-        <h1 className="mt-2 text-4xl font-black text-navy">{isPaid ? 'Votre réservation est confirmée' : 'Votre paiement est en cours de confirmation'}</h1>
-        <p className="mt-4 text-muted">
-          {isPaid
-            ? 'Le webhook Stripe a confirmé le paiement. Spotykite a bien validé votre commande.'
-            : 'La réservation est validée automatiquement après confirmation du webhook Stripe. Cette page se met à jour dès que Stripe confirme le paiement.'}
-        </p>
-        {(sessionId || paymentIntentId) && <p className="mt-4 break-all rounded-2xl border border-border bg-bg p-3 text-xs font-bold text-muted">Référence Stripe : {sessionId || paymentIntentId}</p>}
-        {status.error && !isPaid && <p className="mt-3 text-sm font-bold text-muted">{status.error}</p>}
-        <Link to="/ecoles" className="btn-primary mt-6 justify-center">Voir les écoles</Link>
+        <div>
+          <h1 className="mx-auto mt-6 max-w-lg text-4xl font-black leading-tight text-navy">Votre réservation est confirmée</h1>
+          <p className="mx-auto mt-5 max-w-md text-base leading-7 text-muted">Merci pour votre commande. Votre demande a bien été prise en compte par Spotykite.</p>
+        </div>
+
+        {orderNumber && (
+          <div className="mx-auto mt-8 max-w-sm rounded-2xl border border-turquoise/40 bg-sky p-6 text-center">
+            <p className="text-sm font-black uppercase text-ocean">Numéro de commande</p>
+            <p className="mt-2 text-2xl font-black text-navy">{orderNumber}</p>
+          </div>
+        )}
+
+        <div className="mx-auto mt-10 max-w-md rounded-2xl border border-border bg-bg px-5 py-7 text-center sm:px-8">
+          <h2 className="text-xl font-black text-navy">Prochaines étapes</h2>
+          <ul className="mx-auto mt-5 grid max-w-sm gap-4 text-center text-sm font-bold leading-7 text-muted">
+            <li>Vous allez recevoir un email de confirmation récapitulatif.</li>
+            <li>Si votre date de stage reste à définir, vous devrez contacter directement votre moniteur sur place à l'aide des coordonnées indiquées sur votre bon de réservation Spotykite.</li>
+            <li>Conservez votre numéro de commande pour toute demande concernant votre réservation.</li>
+          </ul>
+        </div>
+
+        <p className="mx-auto mt-10 max-w-md text-center text-lg font-black leading-7 text-navy">À très vite sur le spot, ride cool 🌊</p>
+        <Link to="/" className="btn-primary mx-auto mt-7 justify-center">Retour à l'accueil</Link>
       </div>
     </main>
   );
