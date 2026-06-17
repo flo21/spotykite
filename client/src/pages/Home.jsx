@@ -428,9 +428,46 @@ function SchoolsMapSection({ regionStats, regionStatsStatus, selectedRegion, sel
 
 function MapboxSchoolsMap({ schools, selectedRegion, selectedSchool, onSchoolSelect }) {
   const mapRef = useRef(null);
+  const popupOpenTimeoutRef = useRef(null);
   const token = import.meta.env.VITE_MAPBOX_TOKEN;
   const validSchools = useMemo(() => schools.filter(hasValidCoordinates), [schools]);
   const mobileZoom = typeof window !== 'undefined' && window.innerWidth < 768 ? 4.6 : franceView.zoom;
+  const isMobileViewport = () => typeof window !== 'undefined' && window.innerWidth < 768;
+
+  function focusSchoolOnMap(school) {
+    const map = mapRef.current;
+    if (!map || !hasValidCoordinates(school)) return;
+
+    const mobile = isMobileViewport();
+    const currentZoom = typeof map.getZoom === 'function' ? map.getZoom() : franceView.zoom;
+    map.easeTo({
+      center: [Number(school.longitude), Number(school.latitude)],
+      zoom: Math.max(currentZoom, mobile ? 7 : 6.6),
+      duration: 650,
+      padding: mobile
+        ? { top: 90, right: 28, bottom: 260, left: 28 }
+        : { top: 90, right: 72, bottom: 280, left: 160 },
+      retainPadding: false
+    });
+  }
+
+  function selectSchoolMarker(school) {
+    if (popupOpenTimeoutRef.current) {
+      window.clearTimeout(popupOpenTimeoutRef.current);
+    }
+    focusSchoolOnMap(school);
+    popupOpenTimeoutRef.current = window.setTimeout(() => {
+      onSchoolSelect(school);
+    }, 140);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (popupOpenTimeoutRef.current) {
+        window.clearTimeout(popupOpenTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -491,7 +528,7 @@ function MapboxSchoolsMap({ schools, selectedRegion, selectedSchool, onSchoolSel
               className="spotykite-map-marker"
               onClick={(event) => {
                 event.preventDefault();
-                onSchoolSelect(school);
+                selectSchoolMarker(school);
               }}
               aria-label={`Afficher ${publicSchoolTitle(school)}`}
             >
@@ -505,6 +542,7 @@ function MapboxSchoolsMap({ schools, selectedRegion, selectedSchool, onSchoolSel
             longitude={Number(selectedSchool.longitude)}
             latitude={Number(selectedSchool.latitude)}
             anchor="top"
+            offset={[0, 18]}
             closeButton
             closeOnClick={false}
             onClose={() => onSchoolSelect(null)}

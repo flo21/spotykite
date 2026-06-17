@@ -97,7 +97,7 @@ export default function Layout() {
             SpotyKite
           </Link>
 
-          <nav className="hidden items-center gap-5 text-sm font-black lg:flex">
+          <nav className="hidden items-center gap-4 text-sm font-black lg:flex">
             <DesktopMegaTrigger label="Les spots" active={activeMega === 'spots'} onOpen={() => setActiveMega('spots')} onClose={() => setActiveMega(null)}>
               <SpotsMegaMenu stats={stats} status={statsStatus} />
             </DesktopMegaTrigger>
@@ -107,13 +107,15 @@ export default function Layout() {
             <NavLink to="/carte-cadeau" className={({ isActive }) => (isActive ? 'text-primary' : 'text-white/85 hover:text-primary')}>
               Carte cadeau
             </NavLink>
-            <a href="#blog" className="text-white/85 hover:text-primary">Blog</a>
-            <NavLink to="/faq" className={({ isActive }) => (isActive ? 'text-primary' : 'text-white/85 hover:text-primary')}>
-              FAQ
+            <NavLink to="/jai-une-carte-cadeau" className={({ isActive }) => (isActive ? 'text-primary' : 'text-white/85 hover:text-primary')}>
+              J’ai une carte cadeau
             </NavLink>
           </nav>
 
           <div className="hidden items-center gap-2 lg:flex">
+            <NavLink to="/faq" className={({ isActive }) => `px-2 text-sm font-black ${isActive ? 'text-primary' : 'text-white/85 hover:text-primary'}`}>
+              FAQ
+            </NavLink>
             <a href="tel:+33184808080" className="inline-grid h-9 w-9 place-items-center rounded-full border border-white/35 bg-white/5 text-white transition hover:border-primary hover:text-primary" aria-label="Telephone">
               <Phone size={14} />
             </a>
@@ -176,7 +178,6 @@ export default function Layout() {
               </MobileMega>
               <Link to="/carte-cadeau" onClick={closeMobile} className="mobile-nav-link">Offrir une carte cadeau</Link>
               <Link to="/utiliser-carte-cadeau" onClick={closeMobile} className="mobile-nav-link">J'ai une carte cadeau</Link>
-              <a href="#blog" onClick={closeMobile} className="mobile-nav-link">Blog</a>
               <Link to="/faq" onClick={closeMobile} className="mobile-nav-link">FAQ</Link>
               <Link to="/offrir-un-stage" onClick={closeMobile} className="btn-primary justify-center">Offrir un stage de kitesurf</Link>
               <div className="my-5 rounded-2xl border border-white/12 bg-white/[0.08] px-4 py-4 text-center text-white">
@@ -208,6 +209,7 @@ export default function Layout() {
           <div><b>Confiance</b><p className="mt-2 text-sm text-muted">Moniteurs diplomes, materiel fourni, report meteo.</p></div>
           <div>
             <b>Informations</b>
+            <Link to="/blog" className="mt-2 block text-sm text-muted hover:text-ocean">Blog</Link>
             <Link to="/cgv" className="mt-2 block text-sm text-muted hover:text-ocean">CGV</Link>
             <Link to="/admin" className="mt-2 block text-sm text-muted hover:text-ocean">Dashboard</Link>
           </div>

@@ -15,11 +15,18 @@ export default function Reservation() {
   const { token: resumeRouteToken } = useParams();
   const type = searchParams.get('type');
   const [resumedOrder, setResumedOrder] = useState(null);
+  const isGiftStage = type === 'gift_stage' || type === 'gift-stage';
   const isGiftCard = type === 'gift-card' || resumedOrder?.type === 'gift_card';
+  const useUnifiedGiftTunnel = isGiftCard;
+  const giftStageName = searchParams.get('stage') || 'Stage de kitesurf';
+  const giftStageFormula = searchParams.get('formula') || 'france';
+  const giftStageCenter = searchParams.get('center') || '';
+  const giftStageDepartment = searchParams.get('department') || '';
+  const giftStagePrice = Number(searchParams.get('price') || 199);
   const schoolId = searchParams.get('schoolId');
   const offerId = searchParams.get('offerId');
   const [school, setSchool] = useState(null);
-  const [status, setStatus] = useState(isGiftCard ? 'ready' : schoolId && offerId ? 'loading' : 'missing');
+  const [status, setStatus] = useState(isGiftCard || (isGiftStage && !(schoolId && offerId)) ? 'ready' : schoolId && offerId ? 'loading' : 'missing');
   const [step, setStep] = useState(1);
   const [booking, setBooking] = useState({
     customerFirstname: '',
@@ -34,11 +41,16 @@ export default function Reservation() {
     buyerLastname: '',
     buyerEmail: '',
     buyerPhone: '',
-    recipientMode: 'self',
+    recipientMode: 'other',
     recipientFirstname: '',
     recipientEmail: '',
-    message: ''
+    message: searchParams.get('message') || '',
+    amount: searchParams.get('amount') || '199'
   });
+  const [giftCardCode, setGiftCardCode] = useState(() => searchParams.get('giftCardCode') || window.localStorage.getItem('spotykiteGiftCardCode') || '');
+  const [appliedGiftCard, setAppliedGiftCard] = useState(null);
+  const [giftCardError, setGiftCardError] = useState('');
+  const [giftCardLoading, setGiftCardLoading] = useState(false);
   const [created, setCreated] = useState(null);
   const [paymentError, setPaymentError] = useState('');
   const [paymentLoading, setPaymentLoading] = useState(false);
@@ -89,6 +101,10 @@ export default function Reservation() {
       setStatus('ready');
       return;
     }
+    if (isGiftStage && !(schoolId || resumedOrder?.schoolId) && !(offerId || resumedOrder?.formulaId)) {
+      setStatus('ready');
+      return;
+    }
     const nextSchoolId = schoolId || resumedOrder?.schoolId;
     const nextOfferId = offerId || resumedOrder?.formulaId;
     if (!nextSchoolId || !nextOfferId) {
@@ -110,7 +126,7 @@ export default function Reservation() {
     return () => {
       active = false;
     };
-  }, [isGiftCard, schoolId, offerId, resumedOrder?.schoolId, resumedOrder?.formulaId]);
+  }, [isGiftCard, isGiftStage, schoolId, offerId, resumedOrder?.schoolId, resumedOrder?.formulaId]);
 
   const offer = useMemo(() => {
     return school?.formulas?.find((formula) => String(formula.id) === String(offerId || resumedOrder?.formulaId));
@@ -118,7 +134,7 @@ export default function Reservation() {
   const canBookSchool = isGiftCard || (school?.frontVisibility === 'active' && school?.bookingEnabled);
 
   useEffect(() => {
-    if (isGiftCard || !school || !offer) return;
+    if (isGiftCard || isGiftStage || !school || !offer) return;
     window.localStorage.setItem('currentBooking', JSON.stringify({
       schoolId: school.id,
       schoolName: publicSchoolTitle(school),
@@ -128,10 +144,10 @@ export default function Reservation() {
       reservationUrl: `/reservation?schoolId=${encodeURIComponent(school.id)}&offerId=${encodeURIComponent(offer.id)}`
     }));
     window.dispatchEvent(new Event('spotykite-storage-update'));
-  }, [isGiftCard, school, offer]);
+  }, [isGiftCard, isGiftStage, school, offer]);
 
   useEffect(() => {
-    if (isGiftCard || !school?.id || !offer?.id) {
+    if (isGiftCard || isGiftStage || !school?.id || !offer?.id) {
       setAvailabilities([]);
       return;
     }
@@ -148,24 +164,56 @@ export default function Reservation() {
     return () => {
       active = false;
     };
-  }, [isGiftCard, school?.id, offer?.id]);
+  }, [isGiftCard, isGiftStage, school?.id, offer?.id]);
 
   const canContinueContact = booking.customerFirstname && booking.customerLastname && booking.customerEmail && booking.customerPhone;
   const canContinueDate = booking.dateFlexible || booking.desiredDate;
-  const canContinueGiftBuyer = giftCard.buyerFirstname && giftCard.buyerLastname && giftCard.buyerEmail;
-  const canContinueGiftRecipient = giftCard.recipientMode === 'self' || (giftCard.recipientFirstname && giftCard.recipientEmail);
+  const customGiftAmount = Number(giftCard.amount || 199);
+  const giftAmount = isGiftStage && Number.isFinite(giftStagePrice) && giftStagePrice > 0
+    ? giftStagePrice
+    : Number.isFinite(customGiftAmount) && customGiftAmount > 0
+      ? customGiftAmount
+      : 199;
+  const giftProductName = isGiftStage ? `Cadeau ${giftStageName}` : 'Carte cadeau Spotykite';
+  const giftFormulaLabel = isGiftStage
+    ? giftStageFormula === 'centre'
+      ? `École précise${giftStageCenter ? ` · ${giftStageCenter}` : ''}`
+      : 'Toute France'
+    : 'Carte cadeau Spotykite';
+  const giftStageLocationLabel = giftStageFormula === 'centre'
+    ? [giftStageCenter, giftStageDepartment].filter(Boolean).join(' · ') || 'École précise'
+    : 'Réseau Spotykite France';
+  const canContinueGiftBuyer = giftCard.buyerFirstname && giftCard.buyerLastname && giftCard.buyerEmail && giftAmount > 0;
+  const canContinueGiftRecipient = isGiftCard ? giftCard.recipientFirstname : giftCard.recipientMode === 'self' || giftCard.recipientFirstname;
   const giftRecipientName = giftCard.recipientMode === 'self' ? `${giftCard.buyerFirstname} ${giftCard.buyerLastname}`.trim() : giftCard.recipientFirstname;
   const giftRecipientEmail = giftCard.recipientMode === 'self' ? giftCard.buyerEmail : giftCard.recipientEmail;
   const selectedAvailability = availabilities.find((item) => item.date === booking.desiredDate);
   const selectedPrice = selectedAvailability?.appliedPrice || offer?.price || 0;
-  const canPreparePayment = !isGiftCard && canContinueContact && canContinueDate && selectedPrice > 0 && school && offer;
+  const checkoutAmount = isGiftStage ? giftAmount : selectedPrice;
+  const giftCardBalance = Number(appliedGiftCard?.remainingAmount ?? appliedGiftCard?.remaining_amount ?? 0);
+  const giftCardDiscount = !isGiftCard && giftCardBalance > 0 ? Math.min(giftCardBalance, checkoutAmount) : 0;
+  const payableAmount = Math.max(checkoutAmount - giftCardDiscount, 0);
+  const totalDue = payableAmount;
+  const giftCardApplied = Boolean(appliedGiftCard?.code && giftCardDiscount > 0);
+  const canConfirmGiftCardPayment = !isGiftCard
+    && giftCardApplied
+    && totalDue <= 0
+    && booking.customerFirstname
+    && booking.customerLastname
+    && booking.customerEmail
+    && canContinueDate
+    && checkoutAmount > 0;
+  const reservationTitle = isGiftStage ? giftProductName : `${offer?.name || ''} · ${school ? publicSchoolTitle(school) : ''}`.trim();
+  const canPreparePayment = isGiftCard
+    ? canContinueGiftBuyer && canContinueGiftRecipient && giftAmount > 0
+    : canContinueContact && canContinueDate && checkoutAmount > 0 && payableAmount > 0 && (isGiftStage || (school && offer));
 
   useEffect(() => {
     const timeout = setTimeout(() => {
       saveInitiated('contact');
     }, 600);
     return () => clearTimeout(timeout);
-  }, [booking.customerEmail, booking.customerPhone, booking.customerFirstname, booking.customerLastname, giftCard.buyerEmail, giftCard.buyerPhone, giftCard.buyerFirstname, giftCard.buyerLastname, isGiftCard, school?.id, offer?.id]);
+  }, [booking.customerEmail, booking.customerPhone, booking.customerFirstname, booking.customerLastname, giftCard.buyerEmail, giftCard.buyerPhone, giftCard.buyerFirstname, giftCard.buyerLastname, isGiftCard, isGiftStage, school?.id, offer?.id]);
 
   useEffect(() => {
     if (step >= 2) saveInitiated(stepName(step));
@@ -181,7 +229,7 @@ export default function Reservation() {
     const timeout = setTimeout(() => {
       setPaymentIntentLoading(true);
       setPaymentError('');
-      api.createPaymentIntent(bookingPaymentPayload())
+      api.createPaymentIntent(isGiftCard ? giftCardPaymentPayload() : bookingPaymentPayload())
         .then((intent) => {
           if (!active) return;
           setPaymentIntent(intent);
@@ -208,11 +256,35 @@ export default function Reservation() {
     booking.customerPhone,
     booking.desiredDate,
     booking.dateFlexible,
-    selectedPrice,
+    checkoutAmount,
+    payableAmount,
+    giftCardCode,
+    appliedGiftCard?.code,
+    giftCardDiscount,
+    isGiftStage,
+    isGiftCard,
+    giftStageName,
+    giftStageFormula,
+    giftStageCenter,
+    giftStageDepartment,
+    giftAmount,
+    giftCard.buyerFirstname,
+    giftCard.buyerLastname,
+    giftCard.buyerEmail,
+    giftCard.buyerPhone,
+    giftCard.recipientMode,
+    giftCard.recipientFirstname,
+    giftCard.recipientEmail,
+    giftCard.message,
     school?.id,
     offer?.id,
     resumeOrder?.resumeToken
   ]);
+
+  useEffect(() => {
+    setPaymentIntent(null);
+    setPaymentError('');
+  }, [payableAmount, appliedGiftCard?.code]);
 
   async function saveInitiated(lastStep) {
     const email = isGiftCard ? giftCard.buyerEmail : booking.customerEmail;
@@ -221,15 +293,15 @@ export default function Reservation() {
     const existingToken = resumeOrder?.resumeToken || localStorage.getItem('spotykiteResumeToken');
     const payload = {
       resumeToken: existingToken || undefined,
-      type: isGiftCard ? 'gift_card' : 'booking',
-      schoolId: isGiftCard ? null : school?.id,
-      formulaId: isGiftCard ? null : offer?.id,
+      type: isGiftCard ? 'gift_card' : isGiftStage ? 'gift_stage' : 'booking',
+      schoolId: isGiftCard || (isGiftStage && giftStageFormula !== 'centre') ? null : school?.id,
+      formulaId: isGiftCard || isGiftStage ? null : offer?.id,
       desiredDate: booking.dateFlexible ? 'date à définir' : booking.desiredDate,
       firstName: isGiftCard ? giftCard.buyerFirstname : booking.customerFirstname,
       lastName: isGiftCard ? giftCard.buyerLastname : booking.customerLastname,
       email,
       phone,
-      amount: isGiftCard ? 199 : selectedPrice,
+      amount: isGiftCard || isGiftStage ? giftAmount : selectedPrice,
       sourcePage: window.location.pathname + window.location.search,
       lastStep
     };
@@ -244,7 +316,7 @@ export default function Reservation() {
 
   if (status === 'loading') return <Loading />;
 
-  if (!isGiftCard && (status === 'missing' || !(schoolId || resumedOrder?.schoolId) || !(offerId || resumedOrder?.formulaId) || !school || !offer || !canBookSchool)) {
+  if (!isGiftCard && !isGiftStage && (status === 'missing' || !(schoolId || resumedOrder?.schoolId) || !(offerId || resumedOrder?.formulaId) || !school || !offer || !canBookSchool)) {
     return (
       <main className="section pt-12">
         <div className="card mx-auto max-w-2xl p-8 text-center">
@@ -273,6 +345,45 @@ export default function Reservation() {
     }
   }
 
+  async function applyGiftCardCode() {
+    const code = giftCardCode.trim();
+    setGiftCardError('');
+    setAppliedGiftCard(null);
+    if (!code) {
+      setGiftCardError('Renseignez un code carte cadeau.');
+      return;
+    }
+    setGiftCardLoading(true);
+    try {
+      const card = await api.validateGiftCard({ code });
+      setAppliedGiftCard(card);
+      setGiftCardCode(card.code || code.toUpperCase());
+      window.localStorage.setItem('spotykiteGiftCardCode', card.code || code.toUpperCase());
+    } catch (error) {
+      setGiftCardError(error.message || 'Carte cadeau invalide.');
+    } finally {
+      setGiftCardLoading(false);
+    }
+  }
+
+  async function confirmGiftCardCoveredOrder() {
+    setPaymentError('');
+    if (!canConfirmGiftCardPayment) {
+      setPaymentError('Complétez vos coordonnées avant de valider avec la carte cadeau.');
+      return;
+    }
+    setPaymentLoading(true);
+    try {
+      const result = await api.confirmGiftCardPayment(bookingPaymentPayload());
+      window.localStorage.removeItem('spotykiteGiftCardCode');
+      navigate(`/paiement-reussi?order=${encodeURIComponent(result.orderNumber || result.orderId || '')}`);
+    } catch (error) {
+      setPaymentError(error.message || 'Impossible de valider la carte cadeau.');
+    } finally {
+      setPaymentLoading(false);
+    }
+  }
+
   function bookingCheckoutPayload() {
     const desiredDate = booking.dateFlexible ? 'date à définir' : booking.desiredDate;
     const title = `${offer.name} · ${publicSchoolTitle(school)}`;
@@ -289,48 +400,13 @@ export default function Reservation() {
         spot: school.spot,
         amount: selectedPrice,
         title,
-        metadata: {
-          schoolId: school.id,
-          formulaId: offer.id,
-          desiredDate,
-          resumeToken: resumeOrder?.resumeToken || ''
-        }
-      },
-      metadata: {
-        type: 'booking',
-        schoolId: school.id,
-        formulaId: offer.id,
-        desiredDate,
-        resumeToken: resumeOrder?.resumeToken || ''
-      }
-    };
-  }
-
-  function bookingPaymentPayload() {
-    const desiredDate = booking.dateFlexible ? 'date à définir' : booking.desiredDate;
-    const customerName = `${booking.customerFirstname} ${booking.customerLastname}`.trim();
-    const title = `${offer.name} · ${publicSchoolTitle(school)}`;
-    return {
-      amount: selectedPrice,
-      customerEmail: booking.customerEmail,
-      customerName,
-      title,
-      order: {
-        customerName,
-        customerEmail: booking.customerEmail,
-        customerPhone: booking.customerPhone,
-        productType: 'booking',
-        city: school.city,
-        spot: school.spot,
-        amount: selectedPrice,
-        title,
+        partnerId: school.id,
         metadata: {
           schoolId: school.id,
           schoolName: publicSchoolTitle(school),
           offerId: offer.id,
           offerName: offer.name,
           formulaId: offer.id,
-          selectedDate: desiredDate,
           desiredDate,
           resumeToken: resumeOrder?.resumeToken || ''
         }
@@ -342,27 +418,88 @@ export default function Reservation() {
         offerId: offer.id,
         offerName: offer.name,
         formulaId: offer.id,
-        selectedDate: desiredDate,
         desiredDate,
         resumeToken: resumeOrder?.resumeToken || ''
       }
     };
   }
 
-  function giftCardCheckoutPayload() {
-    const title = 'Carte cadeau Spotykite';
+  function bookingPaymentPayload() {
+    const desiredDate = booking.dateFlexible ? 'date à définir' : booking.desiredDate;
+    const customerName = `${booking.customerFirstname} ${booking.customerLastname}`.trim();
+    const title = isGiftStage ? reservationTitle : `${offer.name} · ${publicSchoolTitle(school)}`;
+    const baseMetadata = isGiftStage ? {
+      type: 'gift_stage',
+      giftType: 'stage',
+      giftStage: giftStageName,
+      giftFormula: giftStageFormula,
+      giftCenter: giftStageCenter,
+      giftDepartment: giftStageDepartment,
+      giftPrice: String(giftAmount),
+      offerName: giftStageName,
+      schoolName: giftStageLocationLabel,
+      selectedDate: desiredDate,
+      desiredDate,
+      message: giftCard.message,
+      resumeToken: resumeOrder?.resumeToken || ''
+    } : {
+      type: 'booking',
+      schoolId: school.id,
+      schoolName: publicSchoolTitle(school),
+      offerId: offer.id,
+      offerName: offer.name,
+      formulaId: offer.id,
+      selectedDate: desiredDate,
+      desiredDate,
+      resumeToken: resumeOrder?.resumeToken || ''
+    };
+    if (appliedGiftCard?.code && giftCardDiscount > 0) {
+      baseMetadata.giftCardCode = appliedGiftCard.code;
+      baseMetadata.giftCardDiscount = String(giftCardDiscount);
+      baseMetadata.giftCardInitialBalance = String(giftCardBalance);
+      baseMetadata.originalAmount = String(checkoutAmount);
+    }
     return {
-      amount: 199,
+      amount: payableAmount,
+      customerEmail: booking.customerEmail,
+      customerName,
+      title,
+      order: {
+        customerName,
+        customerEmail: booking.customerEmail,
+        customerPhone: booking.customerPhone,
+        productType: isGiftStage ? 'gift_stage' : 'booking',
+        city: isGiftStage ? giftStageDepartment || 'France' : school.city,
+        spot: isGiftStage ? giftStageLocationLabel : school.spot,
+        amount: checkoutAmount,
+        title,
+        partnerId: isGiftStage ? (giftStageFormula === 'centre' ? school?.id : null) : school.id,
+        metadata: baseMetadata
+      },
+      metadata: baseMetadata
+    };
+  }
+
+  function giftCardCheckoutPayload() {
+    const title = giftProductName;
+    return {
+      amount: giftAmount,
       customerEmail: giftCard.buyerEmail,
       title,
       order: {
         customerName: `${giftCard.buyerFirstname} ${giftCard.buyerLastname}`.trim(),
         customerEmail: giftCard.buyerEmail,
         customerPhone: giftCard.buyerPhone,
-        productType: 'gift_card',
-        amount: 199,
+        productType: isGiftStage ? 'gift_stage' : 'gift_card',
+        amount: giftAmount,
         title,
         metadata: {
+          giftType: isGiftStage ? 'stage' : 'gift_card',
+          giftStage: isGiftStage ? giftStageName : '',
+          giftFormula: isGiftStage ? giftStageFormula : '',
+          giftCenter: giftStageCenter,
+          giftDepartment: giftStageDepartment,
+          giftPrice: String(giftAmount),
           recipientName: giftRecipientName,
           recipientEmail: giftRecipientEmail,
           message: giftCard.message,
@@ -370,9 +507,55 @@ export default function Reservation() {
         }
       },
       metadata: {
-        type: 'gift_card',
+        type: isGiftStage ? 'gift_stage' : 'gift_card',
+        giftType: isGiftStage ? 'stage' : 'gift_card',
+        giftStage: isGiftStage ? giftStageName : '',
+        giftFormula: isGiftStage ? giftStageFormula : '',
+        giftCenter: giftStageCenter,
+        giftDepartment: giftStageDepartment,
+        giftPrice: String(giftAmount),
         recipientName: giftRecipientName,
         recipientEmail: giftRecipientEmail,
+        resumeToken: resumeOrder?.resumeToken || ''
+      }
+    };
+  }
+
+  function giftCardPaymentPayload() {
+    const buyerName = `${giftCard.buyerFirstname} ${giftCard.buyerLastname}`.trim();
+    return {
+      amount: giftAmount,
+      customerEmail: giftCard.buyerEmail,
+      customerName: buyerName,
+      title: 'Carte cadeau Spotykite',
+      order: {
+        customerName: buyerName,
+        customerEmail: giftCard.buyerEmail,
+        customerPhone: giftCard.buyerPhone,
+        productType: 'gift_card',
+        amount: giftAmount,
+        title: 'Carte cadeau Spotykite',
+        metadata: {
+          type: 'gift_card',
+          giftType: 'gift_card',
+          buyerFirstname: giftCard.buyerFirstname,
+          buyerLastname: giftCard.buyerLastname,
+          recipientName: giftRecipientName,
+          recipientEmail: giftRecipientEmail,
+          message: giftCard.message,
+          giftPrice: String(giftAmount),
+          resumeToken: resumeOrder?.resumeToken || ''
+        }
+      },
+      metadata: {
+        type: 'gift_card',
+        giftType: 'gift_card',
+        buyerFirstname: giftCard.buyerFirstname,
+        buyerLastname: giftCard.buyerLastname,
+        recipientName: giftRecipientName,
+        recipientEmail: giftRecipientEmail,
+        message: giftCard.message,
+        giftPrice: String(giftAmount),
         resumeToken: resumeOrder?.resumeToken || ''
       }
     };
@@ -383,17 +566,82 @@ export default function Reservation() {
       <section className="bg-navy text-white">
         <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:py-14">
           <p className="eyebrow">Tunnel de réservation</p>
-          <h1 className="text-5xl font-black leading-none text-white sm:text-7xl">{isGiftCard ? 'Offrir une carte cadeau' : 'Réserver votre stage'}</h1>
-          <p className="mt-3 text-lg font-bold text-white/80">{isGiftCard ? 'Carte cadeau Spotykite · 199 € · valable 1 an' : `${publicSchoolTitle(school)} · ${publicSchoolLocation(school)}`}</p>
+          <h1 className="text-5xl font-black leading-none text-white sm:text-7xl">{isGiftCard ? 'Offrir une carte cadeau' : isGiftStage ? 'Offrir un stage' : 'Réserver votre stage'}</h1>
+          <p className="mt-3 text-lg font-bold text-white/80">{isGiftCard || isGiftStage ? `${giftProductName} · ${giftAmount} € · ${giftFormulaLabel}` : `${publicSchoolTitle(school)} · ${publicSchoolLocation(school)}`}</p>
         </div>
       </section>
 
       <section className="section">
         <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
           <div className="card p-6 sm:p-8">
-            {isGiftCard && <StepNav current={step} isGiftCard />}
-            <form onSubmit={isGiftCard ? submit : (event) => event.preventDefault()} className="mt-8 grid gap-6">
-              {isGiftCard && step === 1 && (
+            {isGiftCard && !useUnifiedGiftTunnel && <StepNav current={step} isGiftCard />}
+            <form onSubmit={(event) => event.preventDefault()} className="mt-8 grid gap-6">
+              {isGiftCard && useUnifiedGiftTunnel && (
+                <div className="grid gap-6">
+                  <div>
+                    <h2 className="text-4xl font-black text-navy">Finaliser votre achat</h2>
+                    <p className="mt-2 text-sm font-bold text-muted">Renseignez les informations de l’acheteur et du bénéficiaire, puis finalisez le paiement sécurisé.</p>
+                  </div>
+
+                  <div className="grid gap-4">
+                    <h3 className="text-2xl font-black text-navy">Acheteur</h3>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <input className="field" required placeholder="Prénom acheteur" value={giftCard.buyerFirstname} onChange={(event) => setGiftCard({ ...giftCard, buyerFirstname: event.target.value })} />
+                      <input className="field" required placeholder="Nom acheteur" value={giftCard.buyerLastname} onChange={(event) => setGiftCard({ ...giftCard, buyerLastname: event.target.value })} />
+                      <input className="field sm:col-span-2" required type="email" placeholder="Email acheteur" value={giftCard.buyerEmail} onChange={(event) => setGiftCard({ ...giftCard, buyerEmail: event.target.value })} />
+                      <input className="field sm:col-span-2" placeholder="Téléphone acheteur optionnel" value={giftCard.buyerPhone} onChange={(event) => setGiftCard({ ...giftCard, buyerPhone: event.target.value })} />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4">
+                    <h3 className="text-2xl font-black text-navy">Bénéficiaire</h3>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <input className="field" required placeholder="Prénom du bénéficiaire" value={giftCard.recipientFirstname} onChange={(event) => setGiftCard({ ...giftCard, recipientMode: 'other', recipientFirstname: event.target.value })} />
+                      <input className="field" type="email" placeholder="Email bénéficiaire optionnel" value={giftCard.recipientEmail} onChange={(event) => setGiftCard({ ...giftCard, recipientMode: 'other', recipientEmail: event.target.value })} />
+                      <textarea className="field min-h-28 sm:col-span-2" placeholder="Message personnalisé optionnel" value={giftCard.message} onChange={(event) => setGiftCard({ ...giftCard, message: event.target.value })} />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4">
+                    <h3 className="text-2xl font-black text-navy">Carte cadeau</h3>
+                    <div className="grid gap-3">
+                      <input className="field" type="number" min="20" step="1" required placeholder="Montant de la carte cadeau" value={giftCard.amount} onChange={(event) => setGiftCard({ ...giftCard, amount: event.target.value })} />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3">
+                    <SummaryRow label="Produit" value={giftProductName} />
+                    <SummaryRow label="Montant" value={`${giftAmount} €`} />
+                    <SummaryRow label="Validité" value="1 an" />
+                    <SummaryRow label="Envoi" value="Envoi numérique après paiement" />
+                    <SummaryRow label="Bénéficiaire" value={[giftRecipientName, giftRecipientEmail].filter(Boolean).join(' · ') || '-'} />
+                  </div>
+
+                  <div className="rounded-2xl border border-border bg-white p-4">
+                    <h3 className="mb-3 text-xl font-black text-navy">Paiement</h3>
+                    {!import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY === 'pk_test_xxx' ? (
+                      <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+                        VITE_STRIPE_PUBLISHABLE_KEY doit être configurée avec votre clé publique Stripe.
+                      </p>
+                    ) : paymentIntentLoading ? (
+                      <p className="text-sm font-bold text-muted">Préparation du paiement sécurisé...</p>
+                    ) : paymentIntent?.clientSecret ? (
+                      <Elements stripe={stripePromise} options={{ clientSecret: paymentIntent.clientSecret, appearance: { theme: 'stripe' } }}>
+                        <InlinePaymentForm
+                          disabled={!canContinueGiftBuyer || !canContinueGiftRecipient}
+                          paymentIntentId={paymentIntent.paymentIntentId}
+                          onSuccess={(paymentIntentId) => navigate(`/paiement-reussi?payment_intent=${encodeURIComponent(paymentIntentId)}`)}
+                        />
+                      </Elements>
+                    ) : (
+                      <p className="text-sm font-bold text-muted">Complétez les informations pour afficher le paiement.</p>
+                    )}
+                  </div>
+                  {paymentError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{paymentError}</p>}
+                </div>
+              )}
+
+              {isGiftCard && !useUnifiedGiftTunnel && step === 1 && (
                 <div className="grid gap-4">
                   <h2 className="text-4xl font-black text-navy">Étape 1 : Informations acheteur</h2>
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -401,12 +649,13 @@ export default function Reservation() {
                     <input className="field" required placeholder="Nom" value={giftCard.buyerLastname} onChange={(event) => setGiftCard({ ...giftCard, buyerLastname: event.target.value })} />
                     <input className="field sm:col-span-2" required type="email" placeholder="Email" value={giftCard.buyerEmail} onChange={(event) => setGiftCard({ ...giftCard, buyerEmail: event.target.value })} />
                     <input className="field sm:col-span-2" placeholder="Téléphone optionnel" value={giftCard.buyerPhone} onChange={(event) => setGiftCard({ ...giftCard, buyerPhone: event.target.value })} />
+                    <input className="field" type="number" min="20" step="1" required placeholder="Montant de la carte cadeau" value={giftCard.amount} onChange={(event) => setGiftCard({ ...giftCard, amount: event.target.value })} />
                   </div>
                   <button type="button" className="btn-primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-60 sm:w-fit" disabled={!canContinueGiftBuyer} onClick={() => setStep(2)}>Continuer</button>
                 </div>
               )}
 
-              {isGiftCard && step === 2 && (
+              {isGiftCard && !useUnifiedGiftTunnel && step === 2 && (
                 <div className="grid gap-4">
                   <h2 className="text-4xl font-black text-navy">Étape 2 : Informations bénéficiaire</h2>
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -420,7 +669,7 @@ export default function Reservation() {
                   {giftCard.recipientMode === 'other' && (
                     <div className="grid gap-3 sm:grid-cols-2">
                       <input className="field" required placeholder="Prénom bénéficiaire" value={giftCard.recipientFirstname} onChange={(event) => setGiftCard({ ...giftCard, recipientFirstname: event.target.value })} />
-                      <input className="field" required type="email" placeholder="Email bénéficiaire" value={giftCard.recipientEmail} onChange={(event) => setGiftCard({ ...giftCard, recipientEmail: event.target.value })} />
+                      <input className="field" type="email" placeholder="Email bénéficiaire optionnel" value={giftCard.recipientEmail} onChange={(event) => setGiftCard({ ...giftCard, recipientEmail: event.target.value })} />
                       <textarea className="field min-h-28 sm:col-span-2" placeholder="Message personnalisé optionnel" value={giftCard.message} onChange={(event) => setGiftCard({ ...giftCard, message: event.target.value })} />
                     </div>
                   )}
@@ -431,12 +680,13 @@ export default function Reservation() {
                 </div>
               )}
 
-              {isGiftCard && step === 3 && (
+              {isGiftCard && !useUnifiedGiftTunnel && step === 3 && (
                 <div className="grid gap-4">
                   <h2 className="text-4xl font-black text-navy">Étape 3 : Récapitulatif</h2>
                   <div className="grid gap-3">
-                    <SummaryRow label="Produit" value="Carte cadeau Spotykite" />
-                    <SummaryRow label="Montant" value="199 €" />
+                    <SummaryRow label="Produit" value={giftProductName} />
+                    <SummaryRow label="Formule" value={giftFormulaLabel} />
+                    <SummaryRow label="Montant" value={`${giftAmount} €`} />
                     <SummaryRow label="Validité" value="1 an" />
                     <SummaryRow label="Utilisation" value="Utilisable dans toutes les écoles Spotykite" />
                     <SummaryRow label="Envoi" value="Envoi numérique par e-mail" />
@@ -444,18 +694,41 @@ export default function Reservation() {
                   </div>
                   <div className="flex flex-wrap gap-3">
                     <button type="button" className="btn-secondary justify-center" onClick={() => setStep(2)}>Retour</button>
-                    <button type="submit" className="btn-primary justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={paymentLoading}>{paymentLoading ? 'Redirection vers Stripe...' : 'Payer'}</button>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-white p-4">
+                    <h3 className="mb-3 text-xl font-black text-navy">Paiement</h3>
+                    {payableAmount === 0 && appliedGiftCard ? (
+                      <button type="button" className="btn-primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={paymentLoading || !canContinueContact || !canContinueDate} onClick={confirmGiftCardCoveredOrder}>
+                        {paymentLoading ? 'Validation...' : 'Valider avec la carte cadeau'}
+                      </button>
+                    ) : !import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY === 'pk_test_xxx' ? (
+                      <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+                        VITE_STRIPE_PUBLISHABLE_KEY doit être configurée avec votre clé publique Stripe.
+                      </p>
+                    ) : paymentIntentLoading ? (
+                      <p className="text-sm font-bold text-muted">Préparation du paiement sécurisé...</p>
+                    ) : paymentIntent?.clientSecret ? (
+                      <Elements stripe={stripePromise} options={{ clientSecret: paymentIntent.clientSecret, appearance: { theme: 'stripe' } }}>
+                        <InlinePaymentForm
+                          disabled={!canContinueGiftBuyer || !canContinueGiftRecipient}
+                          paymentIntentId={paymentIntent.paymentIntentId}
+                          onSuccess={(paymentIntentId) => navigate(`/paiement-reussi?payment_intent=${encodeURIComponent(paymentIntentId)}`)}
+                        />
+                      </Elements>
+                    ) : (
+                      <p className="text-sm font-bold text-muted">Complétez les informations pour afficher le paiement.</p>
+                    )}
                   </div>
                   {paymentError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{paymentError}</p>}
                 </div>
               )}
 
-              {isGiftCard && step === 4 && (
+              {isGiftCard && !useUnifiedGiftTunnel && step === 4 && (
                 <div className="grid gap-4">
                   <h2 className="text-4xl font-black text-navy">Étape 4 : Paiement</h2>
                   <div className="rounded-2xl border border-turquoise/30 bg-sky/50 p-5">
                     <p className="font-black text-navy">Carte cadeau créée{created?.code ? ` : ${created.code}` : ''}.</p>
-                    <p className="mt-2 text-sm font-bold text-muted">Montant : 199 € · Solde initial : 199 € · Statut : active · Expiration : {created?.expiresAt || 'dans 1 an'}.</p>
+                    <p className="mt-2 text-sm font-bold text-muted">Montant : {giftAmount} € · Statut : active · Expiration : {created?.expiresAt || 'dans 1 an'}.</p>
                     <p className="mt-2 text-sm font-bold text-muted">Le paiement sécurisé Stripe sera finalisé dans l’étape de paiement Spotykite.</p>
                   </div>
                   <Link to="/ecoles" className="btn-secondary justify-center sm:w-fit">Voir les écoles Spotykite</Link>
@@ -507,14 +780,36 @@ export default function Reservation() {
                   </div>
 
                   <div className="grid gap-3">
-                    <SummaryRow label="Spot" value={school.spot || school.city} />
-                    <SummaryRow label="Formule" value={offer.name} />
+                    <SummaryRow label={isGiftStage ? 'Stage offert' : 'Spot'} value={isGiftStage ? giftStageName : (school.spot || school.city)} />
+                    <SummaryRow label="Formule" value={isGiftStage ? giftFormulaLabel : offer.name} />
                     <SummaryRow label="Date" value={booking.dateFlexible ? 'Date à définir' : booking.desiredDate} />
-                    <SummaryRow label="Prix" value={`${selectedPrice} €${selectedAvailability?.specialOfferName ? ` · ${selectedAvailability.specialOfferName}` : ''}`} />
+                    <SummaryRow label="Prix" value={`${checkoutAmount} €${!isGiftStage && selectedAvailability?.specialOfferName ? ` · ${selectedAvailability.specialOfferName}` : ''}`} />
+                    {giftCardDiscount > 0 && <SummaryRow label="Carte cadeau" value={`-${giftCardDiscount} €`} />}
+                    {giftCardDiscount > 0 && <SummaryRow label="À payer" value={`${totalDue} €`} />}
+                  </div>
+
+                  <div className="rounded-2xl border border-border bg-white p-4">
+                    <h3 className="mb-3 text-xl font-black text-navy">Carte cadeau</h3>
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <input className="field flex-1 uppercase" placeholder="Code carte cadeau" value={giftCardCode} onChange={(event) => setGiftCardCode(event.target.value.toUpperCase())} />
+                      <button type="button" className="btn-secondary justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={giftCardLoading || !giftCardCode.trim()} onClick={applyGiftCardCode}>
+                        {giftCardLoading ? 'Vérification...' : 'Appliquer'}
+                      </button>
+                    </div>
+                    {appliedGiftCard && (
+                      <p className="mt-3 rounded-2xl border border-turquoise/30 bg-sky/50 p-3 text-sm font-bold text-navy">
+                        Carte cadeau appliquée : {giftCardDiscount} € utilisés sur {giftCardBalance} € disponibles.
+                      </p>
+                    )}
+                    {giftCardError && <p className="mt-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{giftCardError}</p>}
                   </div>
                   <div className="rounded-2xl border border-border bg-white p-4">
                     <h3 className="mb-3 text-xl font-black text-navy">Paiement</h3>
-                    {!import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY === 'pk_test_xxx' ? (
+                    {totalDue <= 0 && giftCardApplied ? (
+                      <button type="button" className="btn-primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-60" disabled={paymentLoading || !canConfirmGiftCardPayment} onClick={confirmGiftCardCoveredOrder}>
+                        {paymentLoading ? 'Validation...' : 'Valider avec la carte cadeau'}
+                      </button>
+                    ) : !import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY === 'pk_test_xxx' ? (
                       <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
                         VITE_STRIPE_PUBLISHABLE_KEY doit être configurée avec votre clé publique Stripe.
                       </p>
@@ -542,21 +837,24 @@ export default function Reservation() {
           </div>
 
           <aside className="h-fit rounded-3xl border border-border bg-white p-6 shadow-lift">
-            <h2 className="text-2xl font-black text-navy">{isGiftCard ? 'Votre carte cadeau' : 'Votre réservation'}</h2>
+            <h2 className="text-2xl font-black text-navy">{isGiftCard ? 'Votre carte cadeau' : isGiftStage ? 'Votre stage offert' : 'Votre réservation'}</h2>
             {isGiftCard ? (
               <div className="mt-5 grid gap-3">
-                <SummaryRow label="Produit" value="Carte cadeau Spotykite" />
-                <SummaryRow label="Montant" value="199 €" />
+                <SummaryRow label="Produit" value={giftProductName} />
+                <SummaryRow label="Formule" value={giftFormulaLabel} />
+                <SummaryRow label="Montant" value={`${giftAmount} €`} />
                 <SummaryRow label="Validité" value="1 an" />
                 <SummaryRow label="Utilisation" value="Toutes les écoles Spotykite" />
               </div>
             ) : (
               <div className="mt-5 grid gap-3">
-                <SummaryRow label="Spot" value={school.spot || school.city} />
-                <SummaryRow label="Formule" value={offer.name} />
-                <SummaryRow label="Durée" value={offer.duration} />
-                <SummaryRow label="Niveau" value={offer.level} />
-                <SummaryRow label="Prix" value={`${selectedPrice} €`} />
+                <SummaryRow label={isGiftStage ? 'Stage' : 'Spot'} value={isGiftStage ? giftStageName : (school.spot || school.city)} />
+                <SummaryRow label="Formule" value={isGiftStage ? giftFormulaLabel : offer.name} />
+                {!isGiftStage && <SummaryRow label="Durée" value={offer.duration} />}
+                {!isGiftStage && <SummaryRow label="Niveau" value={offer.level} />}
+                <SummaryRow label="Prix" value={`${checkoutAmount} €`} />
+                {giftCardDiscount > 0 && <SummaryRow label="Carte cadeau" value={`-${giftCardDiscount} €`} />}
+                {giftCardDiscount > 0 && <SummaryRow label="À payer" value={`${totalDue} €`} />}
               </div>
             )}
           </aside>

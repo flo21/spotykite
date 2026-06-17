@@ -336,6 +336,12 @@ export function migrate() {
   addColumnIfMissing('orders', 'metadata', 'TEXT');
   addColumnIfMissing('orders', 'customer_email_sent_at', 'TEXT');
   addColumnIfMissing('orders', 'admin_email_sent_at', 'TEXT');
+  addColumnIfMissing('orders', 'consumed_at', 'TEXT');
+  addColumnIfMissing('orders', 'consumed_by', 'TEXT');
+  addColumnIfMissing('orders', 'consumption_method', 'TEXT');
+  addColumnIfMissing('orders', 'voucher_token', 'TEXT');
+  addColumnIfMissing('orders', 'partner_payout_status', "TEXT NOT NULL DEFAULT 'not_payable'");
+  addColumnIfMissing('orders', 'reservation_key', 'TEXT');
   addColumnIfMissing('schools', 'slug', 'TEXT');
   addColumnIfMissing('schools', 'department', 'TEXT');
   addColumnIfMissing('schools', 'address', 'TEXT');
@@ -352,6 +358,7 @@ export function migrate() {
   addColumnIfMissing('schools', 'weather_postpone_policy', 'TEXT');
   addColumnIfMissing('schools', 'opening_period', 'TEXT');
   addColumnIfMissing('schools', 'additional_info', 'TEXT');
+  addColumnIfMissing('schools', 'presentation_badges', 'TEXT');
   addColumnIfMissing('schools', 'created_at', 'TEXT');
   addColumnIfMissing('schools', 'updated_at', 'TEXT');
   addColumnIfMissing('offers', 'publicPrice', 'INTEGER');
@@ -409,6 +416,12 @@ export function migrate() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_stages_partner_stage
       ON partner_stages(partner_id, stage_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_voucher_token
+      ON orders(voucher_token)
+      WHERE voucher_token IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_pending_reservation_key
+      ON orders(reservation_key)
+      WHERE reservation_key IS NOT NULL AND payment_status = 'pending';
 
     CREATE TABLE IF NOT EXISTS accommodations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

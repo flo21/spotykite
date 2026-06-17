@@ -328,8 +328,8 @@ app.get('/api/orders', (_req, res) => {
 app.post('/api/orders', (req, res) => {
   const payload = orderPayload(req.body);
   const result = run(`
-    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata, reservation_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, payload);
   res.status(201).json(serializeOrder(row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid])));
 });
@@ -339,7 +339,7 @@ app.put('/api/orders/:id', (req, res) => {
   run(`
     UPDATE orders SET order_number = ?, customer_firstname = ?, customer_lastname = ?, customer_email = ?, customer_phone = ?,
       product_type = ?, stage_id = ?, partner_id = ?, city = ?, spot = ?, amount = ?, status = ?,
-      payment_status = ?, payment_provider = ?, payment_id = ?, title = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+      payment_status = ?, payment_provider = ?, payment_id = ?, title = ?, metadata = ?, reservation_key = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `, [...payload, req.params.id]);
   res.json(serializeOrder(row('SELECT * FROM orders WHERE id = ?', [req.params.id])));
@@ -456,14 +456,83 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
     }
     if (!customerEmail) return res.status(400).json({ error: 'customerEmail is required' });
 
-    const savedOrder = createPendingStripeOrder({
-      ...order,
-      amount: Math.round(numericAmount),
+    const reservationKey = reservationKeyFor(metadata, customerEmail, numericAmount);
+    let savedOrder = findReusablePendingStripeOrder({
+      reservationKey,
       customerEmail,
-      customerName,
-      title,
-      metadata
+      metadata,
+      amount: numericAmount
     });
+
+    if (savedOrder?.payment_id) {
+      try {
+        const existingPaymentIntent = await stripe.paymentIntents.retrieve(savedOrder.payment_id);
+        const expectedAmount = Math.round(numericAmount * 100);
+        if (existingPaymentIntent && !['canceled', 'succeeded'].includes(existingPaymentIntent.status) && existingPaymentIntent.amount === expectedAmount) {
+          console.log('[stripe:create-payment-intent] reused existing payment intent', {
+            orderId: savedOrder.id,
+            orderNumber: savedOrder.order_number,
+            paymentIntentId: existingPaymentIntent.id,
+            reservationKey
+          });
+          return res.status(200).json({
+            clientSecret: existingPaymentIntent.client_secret,
+            orderId: savedOrder.id,
+            orderNumber: savedOrder.order_number,
+            paymentIntentId: existingPaymentIntent.id,
+            reused: true
+          });
+        }
+        if (existingPaymentIntent && existingPaymentIntent.amount !== expectedAmount) {
+          await stripe.paymentIntents.cancel(existingPaymentIntent.id).catch((error) => {
+            console.warn('[stripe:create-payment-intent] previous payment intent cancel failed', {
+              paymentIntentId: existingPaymentIntent.id,
+              error: serializeError(error)
+            });
+          });
+          run("UPDATE orders SET payment_id = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [savedOrder.id]);
+          savedOrder = row('SELECT * FROM orders WHERE id = ?', [savedOrder.id]);
+        }
+      } catch (error) {
+        console.warn('[stripe:create-payment-intent] existing payment intent could not be reused', {
+          orderId: savedOrder.id,
+          paymentIntentId: savedOrder.payment_id,
+          error: serializeError(error)
+        });
+      }
+    }
+
+    if (!savedOrder) {
+      savedOrder = createPendingStripeOrder({
+        ...order,
+        amount: Math.round(Number(order.amount || numericAmount)),
+        customerEmail,
+        customerName,
+        title,
+        metadata,
+        reservationKey
+      });
+      console.log('[stripe:create-payment-intent] order created', {
+        orderId: savedOrder.id,
+        orderNumber: savedOrder.order_number,
+        reservationKey
+      });
+    } else {
+      run(`
+        UPDATE orders
+        SET title = COALESCE(NULLIF(?, ''), title),
+          metadata = ?,
+          reservation_key = COALESCE(reservation_key, ?),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [title || '', JSON.stringify({ ...parseMetadata(savedOrder.metadata), ...metadata }), reservationKey || null, savedOrder.id]);
+      savedOrder = row('SELECT * FROM orders WHERE id = ?', [savedOrder.id]);
+      console.log('[stripe:create-payment-intent] reused pending order', {
+        orderId: savedOrder.id,
+        orderNumber: savedOrder.order_number,
+        reservationKey
+      });
+    }
 
     const paymentMetadata = stringifyMetadata({
       ...metadata,
@@ -495,9 +564,10 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       SET payment_provider = 'stripe',
         payment_id = ?,
         metadata = ?,
+        reservation_key = COALESCE(reservation_key, ?),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `, [paymentIntent.id, JSON.stringify({ ...metadata, ...paymentMetadata, stripePaymentIntent: paymentIntent.id }), savedOrder.id]);
+    `, [paymentIntent.id, JSON.stringify({ ...metadata, ...paymentMetadata, stripePaymentIntent: paymentIntent.id }), reservationKey || null, savedOrder.id]);
 
     console.log('[stripe:create-payment-intent] created', {
       orderId: savedOrder.id,
@@ -517,6 +587,98 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
   } catch (error) {
     console.error('[stripe:create-payment-intent] error', error);
     res.status(500).json({ error: 'Impossible de préparer le paiement Stripe' });
+  }
+});
+
+app.post('/api/payments/confirm-gift-card-payment', async (req, res) => {
+  try {
+    const { customerEmail, customerName = '', title = '', metadata = {}, order = {} } = req.body;
+    const giftCardCode = metadata.giftCardCode || metadata.gift_card_code;
+    const totalAmount = Math.round(Number(order.amount || metadata.originalAmount || 0));
+    const giftCardDiscount = Math.round(Number(metadata.giftCardDiscount || metadata.gift_card_discount || 0));
+
+    if (!customerEmail) return res.status(400).json({ error: 'customerEmail is required' });
+    if (!giftCardCode) return res.status(400).json({ error: 'Code carte cadeau manquant.' });
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) return res.status(400).json({ error: 'Montant invalide.' });
+    if (!Number.isFinite(giftCardDiscount) || giftCardDiscount < totalAmount) {
+      return res.status(400).json({ error: 'Le solde de la carte cadeau ne couvre pas cette réservation.' });
+    }
+
+    const reservationKey = reservationKeyFor(metadata, customerEmail, totalAmount);
+    const existingOrder = reservationKey ? row(`
+      SELECT * FROM orders
+      WHERE reservation_key = ?
+        AND payment_provider = 'gift_card'
+        AND payment_status = 'paid'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [reservationKey]) : null;
+    if (existingOrder) {
+      return res.status(200).json({
+        orderId: existingOrder.id,
+        orderNumber: existingOrder.order_number,
+        reused: true
+      });
+    }
+
+    const orderMetadata = {
+      ...metadata,
+      customerEmail,
+      customerName,
+      giftCardCode,
+      giftCardDiscount: String(totalAmount),
+      originalAmount: String(totalAmount)
+    };
+
+    const payload = orderPayload({
+      ...order,
+      amount: totalAmount,
+      customerEmail,
+      customerName,
+      title,
+      status: 'payé',
+      paymentStatus: 'paid',
+      paymentProvider: 'gift_card',
+      paymentId: `gift_card_${Date.now()}`,
+      metadata: orderMetadata,
+      reservationKey
+    });
+
+    const result = run(`
+      INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata, reservation_key, paid_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `, payload);
+
+    let savedOrder = row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
+    Object.assign(orderMetadata, applyOrderGiftCardIfNeeded(savedOrder, orderMetadata));
+    const voucherToken = ensureOrderVoucherToken(savedOrder);
+    run(`
+      UPDATE orders
+      SET voucher_token = COALESCE(voucher_token, ?),
+        metadata = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [voucherToken, JSON.stringify(orderMetadata), savedOrder.id]);
+    savedOrder = row('SELECT * FROM orders WHERE id = ?', [savedOrder.id]);
+
+    if (orderMetadata.resumeToken) {
+      markInitiatedPaid(orderMetadata.resumeToken, totalAmount);
+    }
+
+    await sendStripePaymentEmails(savedOrder, {
+      id: savedOrder.payment_id,
+      metadata: orderMetadata,
+      customer_email: customerEmail
+    });
+
+    res.status(201).json({
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.order_number,
+      giftCardCode
+    });
+  } catch (error) {
+    console.error('[gift-card:payment] confirmation error', serializeError(error));
+    res.status(500).json({ error: 'Impossible de valider la carte cadeau.' });
   }
 });
 
@@ -695,6 +857,62 @@ app.post('/api/payments/test-confirmation-email', async (req, res) => {
   }
 });
 
+app.post('/api/vouchers/consume/:token', (req, res) => {
+  const token = String(req.params.token || '').trim();
+  if (!token) return res.status(404).json({ status: 'invalid', message: 'Bon introuvable ou invalide.', error: 'Bon introuvable ou invalide.' });
+
+  const order = row('SELECT * FROM orders WHERE voucher_token = ?', [token]);
+  if (!order) return res.status(404).json({ status: 'invalid', message: 'Bon introuvable ou invalide.', error: 'Bon introuvable ou invalide.' });
+
+  const schoolId = resolveOrderSchoolId(order);
+  const result = consumeOrderVoucher(order, 'qr_scan', schoolId ? `school:${schoolId}` : 'qr_scan');
+  if (result.status === 'already_consumed') {
+    return res.status(409).json({
+      status: 'already_consumed',
+      message: 'Ce bon a déjà été utilisé.',
+      error: 'Ce bon a déjà été utilisé.',
+      orderNumber: order.order_number,
+      consumedAt: order.consumed_at
+    });
+  }
+
+  res.json({
+    status: 'consumed',
+    message: 'Bon validé avec succès.',
+    orderNumber: result.order.order_number,
+    consumedAt: result.order.consumed_at
+  });
+});
+
+app.post('/api/partners/:schoolId/orders/consume', (req, res) => {
+  const schoolId = Number(req.params.schoolId);
+  const orderNumber = String(req.body.orderNumber || req.body.order_number || '').trim();
+  if (!schoolId || !orderNumber) {
+    return res.status(400).json({ error: 'École et numéro de commande requis' });
+  }
+
+  const order = row('SELECT * FROM orders WHERE order_number = ?', [orderNumber]);
+  if (!order) return res.status(404).json({ error: 'Bon introuvable ou invalide.' });
+
+  const orderSchoolId = resolveOrderSchoolId(order);
+  if (!orderSchoolId || Number(orderSchoolId) !== schoolId) {
+    return res.status(403).json({ error: 'Cette commande ne correspond pas à cette école.' });
+  }
+
+  const result = consumeOrderVoucher(order, 'manual_partner', `school:${schoolId}`);
+  if (result.status === 'already_consumed') {
+    return res.status(409).json({
+      error: 'Ce bon a déjà été utilisé.',
+      order: serializeOrder(result.order)
+    });
+  }
+
+  res.json({
+    message: 'Bon validé avec succès.',
+    order: serializeOrder(result.order)
+  });
+});
+
 app.get('/api/prospects', (_req, res) => {
   const initiated = rows(`
     SELECT initiated_orders.*, schools.name AS schoolName, offers.title AS formulaName
@@ -780,7 +998,7 @@ app.post('/api/leads', (req, res) => {
 });
 
 app.get('/api/schools', (req, res) => {
-  const { q, region, department, city, spot, zone, type, include } = req.query;
+  const { q, region, department, city, spot, zone, type, duration, maxPrice, include } = req.query;
   const filters = include === 'all'
     ? []
     : ["COALESCE(schools.status, 'active') = 'active'", "COALESCE(schools.front_visibility, 'active') = 'active'"];
@@ -807,6 +1025,26 @@ app.get('/api/schools', (req, res) => {
         AND ${categoryFilter.sql}
     )`);
     Object.assign(params, categoryFilter.params);
+  }
+  if (duration) {
+    filters.push(`EXISTS (
+      SELECT 1
+      FROM offers duration_filter
+      WHERE duration_filter.schoolId = schools.id
+        AND duration_filter.active = 1
+        AND duration_filter.duration = :duration
+    )`);
+    params.duration = duration;
+  }
+  if (maxPrice) {
+    filters.push(`EXISTS (
+      SELECT 1
+      FROM offers price_filter
+      WHERE price_filter.schoolId = schools.id
+        AND price_filter.active = 1
+        AND COALESCE(price_filter.spotykitePrice, price_filter.price, price_filter.publicPrice) <= :maxPrice
+    )`);
+    params.maxPrice = Number(maxPrice);
   }
 
   const where = filters.length ? ` WHERE ${filters.join(' AND ')}` : '';
@@ -960,14 +1198,14 @@ app.get('/api/schools/:slug', (req, res) => {
 
 app.post('/api/schools', (req, res) => {
   const payload = schoolPayload(req.body);
-  const result = run('INSERT INTO schools (name, slug, description, region, department, city, spot, address, latitude, longitude, rating, phone, email, website, imageUrl, photos, status, front_visibility, booking_enabled, pedagogy, spot_details, weather_policy, weather_postpone_policy, opening_period, additional_info, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)', payload);
+  const result = run('INSERT INTO schools (name, slug, description, region, department, city, spot, address, latitude, longitude, rating, phone, email, website, imageUrl, photos, status, front_visibility, booking_enabled, pedagogy, spot_details, weather_policy, weather_postpone_policy, opening_period, additional_info, presentation_badges, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)', payload);
   syncSchoolFormulas(result.lastInsertRowid, req.body);
   res.status(201).json(serializeSchool(row(`${schoolSelect} WHERE schools.id = ? GROUP BY schools.id`, [result.lastInsertRowid])));
 });
 
 app.put('/api/schools/:id', (req, res) => {
   const payload = schoolPayload(req.body);
-  run('UPDATE schools SET name = ?, slug = ?, description = ?, region = ?, department = ?, city = ?, spot = ?, address = ?, latitude = ?, longitude = ?, rating = ?, phone = ?, email = ?, website = ?, imageUrl = ?, photos = ?, status = ?, front_visibility = ?, booking_enabled = ?, pedagogy = ?, spot_details = ?, weather_policy = ?, weather_postpone_policy = ?, opening_period = ?, additional_info = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [...payload, req.params.id]);
+  run('UPDATE schools SET name = ?, slug = ?, description = ?, region = ?, department = ?, city = ?, spot = ?, address = ?, latitude = ?, longitude = ?, rating = ?, phone = ?, email = ?, website = ?, imageUrl = ?, photos = ?, status = ?, front_visibility = ?, booking_enabled = ?, pedagogy = ?, spot_details = ?, weather_policy = ?, weather_postpone_policy = ?, opening_period = ?, additional_info = ?, presentation_badges = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [...payload, req.params.id]);
   syncSchoolFormulas(req.params.id, req.body);
   res.json(serializeSchool(row(`${schoolSelect} WHERE schools.id = ? GROUP BY schools.id`, [req.params.id])));
 });
@@ -1222,8 +1460,10 @@ app.post('/api/bookings', (req, res) => {
   }
   const calculated = (!dateFlexible && (desiredDate || date)) ? calculateFormulaPrice(offer.id, desiredDate || date) : null;
   const amount = Number(calculated?.price || offer.spotykitePrice || offer.price || offer.publicPrice || 0);
-  const appliedGiftCard = giftCardCode ? row('SELECT * FROM gift_cards WHERE UPPER(code) = UPPER(?)', [giftCardCode]) : null;
-  const discount = appliedGiftCard && appliedGiftCard.status === 'active' ? Math.min(Number(appliedGiftCard.remaining_amount || appliedGiftCard.amount || 0), amount) : 0;
+  const giftCardValidation = giftCardCode ? findUsableGiftCard(giftCardCode) : {};
+  if (giftCardValidation.error) return res.status(giftCardValidation.error.status).json({ error: giftCardValidation.error.message });
+  const appliedGiftCard = giftCardValidation.card || null;
+  const discount = appliedGiftCard ? Math.min(giftCardRemaining(appliedGiftCard), amount) : 0;
   const totalPrice = amount - discount;
   const name = customerName || `${customerFirstname || ''} ${customerLastname || ''}`.trim();
   const result = run('INSERT INTO bookings (offerId, giftCardId, customerName, customerEmail, customerPhone, date, region, schoolId, level, status, totalPrice, dateFlexible, paymentStatus, orderStatus, giftCardCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [selectedOfferId, appliedGiftCard?.id || giftCardId, name, customerEmail, customerPhone, desiredDate || date || 'date à définir', region || school?.region || null, school?.id || schoolId, level || offer.level, totalPrice === 0 ? 'confirmed' : 'pending', totalPrice, toBoolInt(dateFlexible), totalPrice === 0 ? 'paid' : 'pending', 'en attente', giftCardCode]);
@@ -1232,8 +1472,7 @@ app.post('/api/bookings', (req, res) => {
     incrementAvailabilityBooking(school.id, selectedOfferId, desiredDate || date);
   }
   if (appliedGiftCard && discount > 0) {
-    const remaining = Number(appliedGiftCard.remaining_amount || appliedGiftCard.amount || 0) - discount;
-    run('UPDATE gift_cards SET remaining_amount = ?, status = ?, redeemedAt = CASE WHEN ? = 0 THEN CURRENT_TIMESTAMP ELSE redeemedAt END, bookingId = ? WHERE id = ?', [remaining, remaining === 0 ? 'redeemed' : 'active', remaining, result.lastInsertRowid, appliedGiftCard.id]);
+    applyGiftCardCredit(giftCardCode, result.lastInsertRowid, discount);
   }
   res.status(201).json(row('SELECT * FROM bookings WHERE id = ?', [result.lastInsertRowid]));
 });
@@ -1274,6 +1513,14 @@ app.delete('/api/accommodations/:id', (req, res) => {
 });
 
 app.get('/api/gift-cards', (_req, res) => {
+  run(`
+    UPDATE gift_cards
+    SET status = 'expired',
+      updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'active'
+      AND COALESCE(expires_at, expiresAt) IS NOT NULL
+      AND COALESCE(expires_at, expiresAt) < ?
+  `, [todayDateString()]);
   res.json(rows(`SELECT gift_cards.*, offers.title AS offerTitle FROM gift_cards LEFT JOIN offers ON offers.id = gift_cards.offerId ORDER BY COALESCE(gift_cards.created_at, gift_cards.createdAt) DESC`).map(serializeGiftCard));
 });
 
@@ -1344,32 +1591,20 @@ app.delete('/api/gift-cards/:id', (req, res) => {
 });
 
 app.post('/api/gift-cards/validate', (req, res) => {
-  const { code, recipientEmail } = req.body;
-  const card = row(`SELECT gift_cards.*, offers.title AS offerTitle FROM gift_cards LEFT JOIN offers ON offers.id = gift_cards.offerId WHERE UPPER(gift_cards.code) = UPPER(?) AND LOWER(gift_cards.recipientEmail) = LOWER(?)`, [code || '', recipientEmail || '']);
-  if (!card) return res.status(404).json({ error: 'Carte Cadeau SpotyKite introuvable' });
-  if (card.status === 'redeemed') return res.status(409).json({ error: 'Carte Cadeau SpotyKite deja utilisee' });
-  if (card.status === 'cancelled') return res.status(409).json({ error: 'Carte Cadeau SpotyKite annulee' });
-  if (card.expiresAt && new Date(card.expiresAt) < new Date(new Date().toISOString().slice(0, 10))) {
-    run("UPDATE gift_cards SET status = 'expired' WHERE id = ?", [card.id]);
-    return res.status(410).json({ error: 'Carte Cadeau SpotyKite expiree' });
-  }
-  if (card.status === 'expired') return res.status(410).json({ error: 'Carte Cadeau SpotyKite expiree' });
-  res.json(card);
+  const validation = findUsableGiftCard(req.body.code);
+  if (validation.error) return res.status(validation.error.status).json({ error: validation.error.message });
+  res.json(serializeGiftCard(validation.card));
 });
 
 app.post('/api/gift-cards/redeem', (req, res) => {
   const { code, recipientEmail, region, schoolId, date, customerName, customerPhone = '', level = 'debutant' } = req.body;
-  const card = row(`SELECT * FROM gift_cards WHERE UPPER(code) = UPPER(?) AND LOWER(recipientEmail) = LOWER(?)`, [code || '', recipientEmail || '']);
-  if (!card) return res.status(404).json({ error: 'Carte Cadeau SpotyKite introuvable' });
-  if (card.status === 'redeemed') return res.status(409).json({ error: 'Carte Cadeau SpotyKite deja utilisee' });
-  if (card.expiresAt && new Date(card.expiresAt) < new Date(new Date().toISOString().slice(0, 10))) {
-    run("UPDATE gift_cards SET status = 'expired' WHERE id = ?", [card.id]);
-    return res.status(410).json({ error: 'Carte Cadeau SpotyKite expiree' });
-  }
+  const validation = findUsableGiftCard(code);
+  if (validation.error) return res.status(validation.error.status).json({ error: validation.error.message });
+  const card = validation.card;
   if (!card.offerId) return res.status(400).json({ error: 'Aucune experience associee a cette Carte Cadeau SpotyKite' });
   const bookingResult = run('INSERT INTO bookings (offerId, giftCardId, customerName, customerEmail, customerPhone, date, region, schoolId, level, status, totalPrice) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [card.offerId, card.id, customerName || card.recipientName, recipientEmail, customerPhone, date, region, schoolId ? Number(schoolId) : null, level, 'confirmed', 0]);
   const bookingId = bookingResult.lastInsertRowid;
-  run("UPDATE gift_cards SET status = 'redeemed', redeemedAt = CURRENT_TIMESTAMP, bookingId = ? WHERE id = ?", [bookingId, card.id]);
+  applyGiftCardCredit(code, bookingId, giftCardRemaining(card));
   res.status(201).json({
     booking: row('SELECT * FROM bookings WHERE id = ?', [bookingId]),
     giftCard: row('SELECT * FROM gift_cards WHERE id = ?', [card.id])
@@ -1443,6 +1678,7 @@ function schoolPayload(body) {
   const description = body.description || body.fullDescription || body.shortDescription || '';
   const imageUrl = body.imageUrl || body.mainPhoto || body.main_image_url || 'https://images.unsplash.com/photo-1500375592092-40eb2168fd21?auto=format&fit=crop&w=1200&q=80';
   const photos = Array.isArray(body.photos) ? body.photos.join(',') : (body.photos || body.galleryPhotos || imageUrl);
+  const presentationBadges = normalizePresentationBadges(body.presentationBadges ?? body.presentation_badges ?? body.badges);
   return [
     name,
     body.slug || slugify(`ecole kitesurf ${body.city || ''} ${name}`),
@@ -1468,8 +1704,26 @@ function schoolPayload(body) {
     body.weather_policy || body.weatherPolicy || body.weatherConditions || '',
     body.weather_postpone_policy || body.weatherPostponePolicy || '',
     body.opening_period || body.openingPeriod || '',
-    body.additional_info || body.additionalInfo || ''
+    body.additional_info || body.additionalInfo || '',
+    JSON.stringify(presentationBadges)
   ];
+}
+
+function normalizePresentationBadges(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (!value) return [];
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return normalizePresentationBadges(parsed);
+    } catch {
+      // Fall back to comma-separated tags.
+    }
+    return value.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function formulaPayload(body) {
@@ -1728,20 +1982,24 @@ function orderPayload(body) {
     body.payment_provider || body.paymentProvider || '',
     body.payment_id || body.paymentId || '',
     body.title || body.product || '',
-    body.metadata ? JSON.stringify(body.metadata) : null
+    body.metadata ? JSON.stringify(body.metadata) : null,
+    body.reservation_key || body.reservationKey || null
   ];
 }
 
 function createPendingStripeOrder(body) {
+  const metadata = body.metadata || {};
+  const partnerId = body.partnerId || body.partner_id || resolveOrderSchoolId(metadata);
   const payload = orderPayload({
     ...body,
+    partnerId,
     status: 'pending',
     paymentStatus: 'pending',
     paymentProvider: 'stripe'
   });
   const result = run(`
-    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata, reservation_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, payload);
   return row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
 }
@@ -1761,6 +2019,280 @@ function parseMetadata(value) {
   } catch {
     return {};
   }
+}
+
+function newVoucherToken() {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+function voucherUrl(token) {
+  return `${frontendUrl}/voucher/consume/${encodeURIComponent(token)}`;
+}
+
+function giftCardUseUrl(code) {
+  return `${frontendUrl}/jai-une-carte-cadeau?code=${encodeURIComponent(code || '')}`;
+}
+
+function resolveOrderSchoolId(orderOrMetadata = {}) {
+  const metadata = orderOrMetadata.metadata && typeof orderOrMetadata.metadata === 'string'
+    ? parseMetadata(orderOrMetadata.metadata)
+    : orderOrMetadata;
+  if (metadata.schoolId || metadata.school_id) return Number(metadata.schoolId || metadata.school_id);
+  if (metadata.formulaId || metadata.formula_id || metadata.offerId || metadata.offer_id) {
+    const formula = row('SELECT schoolId FROM offers WHERE id = ?', [metadata.formulaId || metadata.formula_id || metadata.offerId || metadata.offer_id]);
+    if (formula?.schoolId) return Number(formula.schoolId);
+  }
+  if (orderOrMetadata.partner_id || orderOrMetadata.partnerId) return Number(orderOrMetadata.partner_id || orderOrMetadata.partnerId);
+  return null;
+}
+
+function reservationKeyFor(metadata = {}, customerEmail = '', amount = 0) {
+  const resumeToken = metadata.resumeToken || metadata.resume_token || '';
+  const schoolId = metadata.schoolId || metadata.school_id || '';
+  const formulaId = metadata.formulaId || metadata.formula_id || metadata.offerId || metadata.offer_id || '';
+  const roundedAmount = Math.round(Number(amount || 0));
+  if (resumeToken) return `resume:${resumeToken}`;
+  if ((metadata.type === 'gift_stage' || metadata.giftType === 'stage') && customerEmail && roundedAmount > 0) {
+    return `gift_stage:${String(customerEmail).toLowerCase()}:${metadata.giftStage || ''}:${metadata.giftFormula || ''}:${metadata.giftCenter || ''}:${roundedAmount}`;
+  }
+  if (customerEmail && schoolId && formulaId && roundedAmount > 0) {
+    return `booking:${String(customerEmail).toLowerCase()}:${schoolId}:${formulaId}:${roundedAmount}`;
+  }
+  return '';
+}
+
+function sameReservationMetadata(existingMetadata = {}, nextMetadata = {}) {
+  const existingResumeToken = existingMetadata.resumeToken || existingMetadata.resume_token || '';
+  const nextResumeToken = nextMetadata.resumeToken || nextMetadata.resume_token || '';
+  if (existingResumeToken && nextResumeToken) return existingResumeToken === nextResumeToken;
+
+  if ((existingMetadata.type === 'gift_stage' || nextMetadata.type === 'gift_stage' || existingMetadata.giftType === 'stage' || nextMetadata.giftType === 'stage')) {
+    return String(existingMetadata.giftStage || '') === String(nextMetadata.giftStage || '')
+      && String(existingMetadata.giftFormula || '') === String(nextMetadata.giftFormula || '')
+      && String(existingMetadata.giftCenter || '') === String(nextMetadata.giftCenter || '');
+  }
+
+  const existingSchoolId = existingMetadata.schoolId || existingMetadata.school_id || '';
+  const nextSchoolId = nextMetadata.schoolId || nextMetadata.school_id || '';
+  const existingFormulaId = existingMetadata.formulaId || existingMetadata.formula_id || existingMetadata.offerId || existingMetadata.offer_id || '';
+  const nextFormulaId = nextMetadata.formulaId || nextMetadata.formula_id || nextMetadata.offerId || nextMetadata.offer_id || '';
+  return Boolean(existingSchoolId && nextSchoolId && existingFormulaId && nextFormulaId)
+    && String(existingSchoolId) === String(nextSchoolId)
+    && String(existingFormulaId) === String(nextFormulaId);
+}
+
+function findReusablePendingStripeOrder({ reservationKey, customerEmail, metadata, amount }) {
+  if (reservationKey) {
+    const keyedOrder = row(`
+      SELECT * FROM orders
+      WHERE reservation_key = ?
+        AND payment_provider = 'stripe'
+        AND payment_status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [reservationKey]);
+    if (keyedOrder) return keyedOrder;
+  }
+
+  return rows(`
+    SELECT * FROM orders
+    WHERE payment_provider = 'stripe'
+      AND payment_status = 'pending'
+      AND LOWER(customer_email) = LOWER(?)
+      AND amount = ?
+    ORDER BY created_at DESC
+    LIMIT 25
+  `, [customerEmail, Math.round(Number(amount || 0))])
+    .find((order) => sameReservationMetadata(parseMetadata(order.metadata), metadata)) || null;
+}
+
+function ensureOrderVoucherToken(order) {
+  if (order.voucher_token) return order.voucher_token;
+  let token = newVoucherToken();
+  while (row('SELECT id FROM orders WHERE voucher_token = ?', [token])) {
+    token = newVoucherToken();
+  }
+  run('UPDATE orders SET voucher_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [token, order.id]);
+  return token;
+}
+
+function consumeOrderVoucher(order, method, consumedBy) {
+  if (!order) return { status: 'invalid' };
+  if (order.consumed_at) return { status: 'already_consumed', order };
+
+  run(`
+    UPDATE orders
+    SET status = 'consumed',
+      consumed_at = CURRENT_TIMESTAMP,
+      consumed_by = ?,
+      consumption_method = ?,
+      partner_payout_status = CASE
+        WHEN payment_status = 'paid' THEN 'payable'
+        ELSE COALESCE(partner_payout_status, 'not_payable')
+      END,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [consumedBy || '', method, order.id]);
+
+  return { status: 'consumed', order: row('SELECT * FROM orders WHERE id = ?', [order.id]) };
+}
+
+function giftCardCode() {
+  return `SKC-${crypto.randomBytes(3).toString('hex').toUpperCase()}-${Date.now().toString().slice(-4)}`;
+}
+
+function ensureGiftCardForPaidOrder(order, metadata = {}) {
+  if (order.product_type !== 'gift_card' && metadata.type !== 'gift_card') return {};
+  if (metadata.giftCardCode) return metadata;
+
+  let code = giftCardCode();
+  while (row('SELECT id FROM gift_cards WHERE UPPER(code) = UPPER(?)', [code])) {
+    code = giftCardCode();
+  }
+
+  const expiresAt = new Date();
+  expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+  const expiresDate = expiresAt.toISOString().slice(0, 10);
+  const buyerName = `${order.customer_firstname || ''} ${order.customer_lastname || ''}`.trim();
+  const recipientName = metadata.recipientName || metadata.beneficiaryName || buyerName;
+  const recipientEmail = metadata.recipientEmail || metadata.beneficiaryEmail || order.customer_email;
+  const amount = Number(metadata.giftPrice || order.amount || 0);
+
+  run(`
+    INSERT INTO gift_cards (offerId, buyerName, buyerEmail, recipientName, recipientEmail, message, amount, initial_amount, remaining_amount, status, code, expiresAt, buyer_firstname, buyer_lastname, buyer_email, beneficiary_name, beneficiary_email, stage_id, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `, [
+    null,
+    buyerName,
+    order.customer_email,
+    recipientName,
+    recipientEmail,
+    metadata.message || '',
+    amount,
+    amount,
+    amount,
+    'active',
+    code,
+    expiresDate,
+    order.customer_firstname || '',
+    order.customer_lastname || '',
+    order.customer_email,
+    recipientName,
+    recipientEmail,
+    null,
+    expiresDate
+  ]);
+
+  return {
+    ...metadata,
+    giftCardCode: code,
+    giftCardExpiresAt: expiresDate,
+    recipientName,
+    recipientEmail
+  };
+}
+
+function todayDateString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function giftCardExpiry(card) {
+  return card.expires_at || card.expiresAt || '';
+}
+
+function giftCardRemaining(card) {
+  return Number(card.remaining_amount ?? card.remainingAmount ?? card.amount ?? 0);
+}
+
+function findUsableGiftCard(code) {
+  const card = row(`SELECT gift_cards.*, offers.title AS offerTitle FROM gift_cards LEFT JOIN offers ON offers.id = gift_cards.offerId WHERE UPPER(gift_cards.code) = UPPER(?)`, [String(code || '').trim()]);
+  if (!card) {
+    return { error: { status: 404, message: 'Carte cadeau introuvable.' } };
+  }
+
+  const expiresAt = giftCardExpiry(card);
+  if (card.status === 'expired' || (expiresAt && new Date(expiresAt) < new Date(todayDateString()))) {
+    run("UPDATE gift_cards SET status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [card.id]);
+    return { error: { status: 410, message: 'Cette carte cadeau a expiré.' } };
+  }
+
+  if (card.status === 'cancelled') {
+    return { error: { status: 409, message: 'Cette carte cadeau est annulée.' } };
+  }
+
+  const remaining = giftCardRemaining(card);
+  if (card.status === 'used' || card.status === 'redeemed' || remaining <= 0) {
+    run("UPDATE gift_cards SET status = 'used', remaining_amount = 0, used_at = COALESCE(used_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?", [card.id]);
+    return { error: { status: 409, message: 'Cette carte cadeau est déjà utilisée.' } };
+  }
+
+  return { card: { ...card, remaining_amount: remaining, remainingAmount: remaining, expiresAt } };
+}
+
+function applyGiftCardCredit(code, orderId, amountToUse) {
+  const validation = findUsableGiftCard(code);
+  if (validation.error) return validation;
+
+  const card = validation.card;
+  const requestedAmount = Number(amountToUse || 0);
+  const usedAmount = Math.min(giftCardRemaining(card), Math.max(requestedAmount, 0));
+  const remaining = Math.max(giftCardRemaining(card) - usedAmount, 0);
+  const nextStatus = remaining === 0 ? 'used' : 'active';
+
+  run(`
+    UPDATE gift_cards
+    SET remaining_amount = ?,
+      status = ?,
+      used_at = CASE WHEN ? = 'used' THEN COALESCE(used_at, CURRENT_TIMESTAMP) ELSE used_at END,
+      redeemedAt = CASE WHEN ? = 'used' THEN COALESCE(redeemedAt, CURRENT_TIMESTAMP) ELSE redeemedAt END,
+      bookingId = COALESCE(bookingId, ?),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [remaining, nextStatus, nextStatus, nextStatus, orderId || null, card.id]);
+
+  return {
+    card: row('SELECT * FROM gift_cards WHERE id = ?', [card.id]),
+    usedAmount,
+    remaining,
+    status: nextStatus
+  };
+}
+
+function applyOrderGiftCardIfNeeded(order, orderMetadata = {}) {
+  const code = orderMetadata.giftCardCode || orderMetadata.gift_card_code;
+  const amountToUse = Number(orderMetadata.giftCardDiscount || orderMetadata.gift_card_discount || 0);
+  if (!code || amountToUse <= 0 || orderMetadata.giftCardAppliedAt) return orderMetadata;
+
+  const result = applyGiftCardCredit(code, order.id, amountToUse);
+  if (result.error) {
+    console.error('[gift-card] debit failed', {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      code,
+      error: result.error
+    });
+    return {
+      ...orderMetadata,
+      giftCardDebitError: result.error.message
+    };
+  }
+
+  console.log('[gift-card] debited', {
+    orderId: order.id,
+    orderNumber: order.order_number,
+    code,
+    usedAmount: result.usedAmount,
+    remaining: result.remaining,
+    status: result.status
+  });
+
+  return {
+    ...orderMetadata,
+    giftCardAppliedAt: new Date().toISOString(),
+    giftCardUsedAmount: String(result.usedAmount),
+    giftCardRemainingAfterUse: String(result.remaining),
+    giftCardStatusAfterUse: result.status
+  };
 }
 
 function findStripeOrderFromMetadata(metadata, fallbackColumn, fallbackValue) {
@@ -1793,6 +2325,10 @@ function markStripeCheckoutSessionPaid(session) {
     stripeCheckoutUrl: parseMetadata(order.metadata).stripeCheckoutUrl,
     stripePaymentIntent: session.payment_intent || ''
   };
+  Object.assign(orderMetadata, ensureGiftCardForPaidOrder(order, orderMetadata));
+  Object.assign(orderMetadata, applyOrderGiftCardIfNeeded(order, orderMetadata));
+  const partnerId = order.partner_id || resolveOrderSchoolId(orderMetadata);
+  const voucherToken = ensureOrderVoucherToken(order);
 
   run(`
     UPDATE orders
@@ -1801,11 +2337,14 @@ function markStripeCheckoutSessionPaid(session) {
       payment_provider = 'stripe',
       payment_id = ?,
       stripe_session_id = ?,
+      partner_id = COALESCE(partner_id, ?),
+      voucher_token = COALESCE(voucher_token, ?),
+      partner_payout_status = COALESCE(partner_payout_status, 'not_payable'),
       metadata = ?,
       paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `, [session.payment_intent || session.id, session.id, JSON.stringify(orderMetadata), order.id]);
+  `, [session.payment_intent || session.id, session.id, partnerId, voucherToken, JSON.stringify(orderMetadata), order.id]);
 
   if (orderMetadata.resumeToken) {
     markInitiatedPaid(orderMetadata.resumeToken, order.amount);
@@ -1839,6 +2378,10 @@ function markStripePaymentIntentPaid(paymentIntent) {
     ...metadata,
     stripePaymentIntent: paymentIntent.id
   };
+  Object.assign(orderMetadata, ensureGiftCardForPaidOrder(order, orderMetadata));
+  Object.assign(orderMetadata, applyOrderGiftCardIfNeeded(order, orderMetadata));
+  const partnerId = order.partner_id || resolveOrderSchoolId(orderMetadata);
+  const voucherToken = ensureOrderVoucherToken(order);
 
   run(`
     UPDATE orders
@@ -1846,11 +2389,14 @@ function markStripePaymentIntentPaid(paymentIntent) {
       payment_status = 'paid',
       payment_provider = 'stripe',
       payment_id = ?,
+      partner_id = COALESCE(partner_id, ?),
+      voucher_token = COALESCE(voucher_token, ?),
+      partner_payout_status = COALESCE(partner_payout_status, 'not_payable'),
       metadata = ?,
       paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `, [paymentIntent.id, JSON.stringify(orderMetadata), order.id]);
+  `, [paymentIntent.id, partnerId, voucherToken, JSON.stringify(orderMetadata), order.id]);
 
   if (orderMetadata.resumeToken) {
     markInitiatedPaid(orderMetadata.resumeToken, order.amount);
@@ -1907,18 +2453,20 @@ function serializeError(error) {
 }
 
 async function sendStripePaymentEmails(order, session) {
-  const emailData = buildStripePaymentEmailData(order, session);
+  const voucherToken = ensureOrderVoucherToken(order);
+  const orderWithVoucher = { ...order, voucher_token: voucherToken };
+  const emailData = buildStripePaymentEmailData(orderWithVoucher, session);
   console.log('[email] confirmation flow start', {
-    orderId: order.id,
-    orderNumber: order.order_number,
+    orderId: orderWithVoucher.id,
+    orderNumber: orderWithVoucher.order_number,
     sessionId: session.id,
     stripeEmailCandidate: getStripePaymentEmailCandidate(session),
     finalCustomerEmail: emailData.customerEmail,
     adminEmail: process.env.SPOTYKITE_ADMIN_EMAIL
   });
   const emailResults = await Promise.allSettled([
-    sendCustomerPaymentEmail(order, emailData),
-    sendAdminPaymentEmail(order, emailData)
+    sendCustomerPaymentEmail(orderWithVoucher, emailData),
+    sendAdminPaymentEmail(orderWithVoucher, emailData)
   ]);
   console.log('[email] confirmation flow result', emailResults);
   return emailResults;
@@ -1947,16 +2495,34 @@ async function sendCustomerPaymentEmail(order, emailData) {
   });
 
   try {
-    const reservationPdf = await createReservationPdf(emailData);
+    if (emailData.voucherUrl && !emailData.voucherQrCodeDataUrl) {
+      emailData.voucherQrCodeDataUrl = await QRCode.toDataURL(emailData.voucherUrl, { width: 900, margin: 1 });
+    }
+    const attachmentPdf = emailData.productType === 'gift_card'
+      ? await createGiftCardPdf(emailData)
+      : await createReservationPdf(emailData);
+    const subject = emailData.productType === 'gift_card'
+      ? 'Votre carte cadeau Spotykite est prête'
+      : emailData.productType === 'gift_stage'
+        ? 'Votre stage Spotykite à offrir est prêt'
+        : 'Confirmation de votre demande Spotykite';
+    const html = emailData.productType === 'gift_card'
+      ? giftCardBuyerHtml(emailData)
+      : emailData.productType === 'gift_stage'
+        ? giftStageBuyerHtml(emailData)
+        : paymentCustomerHtml(emailData);
+    const filename = emailData.productType === 'gift_card'
+      ? `Carte-cadeau-${emailData.orderNumber}.pdf`
+      : `Reservation-${emailData.orderNumber}.pdf`;
     const resultClient = await getResendClient().emails.send({
       from: mailFrom(),
       to: emailData.customerEmail,
-      subject: 'Confirmation de votre demande Spotykite',
-      html: paymentCustomerHtml(emailData),
+      subject,
+      html,
       attachments: [
         {
-          filename: `Reservation-${emailData.orderNumber}.pdf`,
-          content: reservationPdf.toString('base64')
+          filename,
+          content: attachmentPdf.toString('base64')
         }
       ]
     });
@@ -2037,15 +2603,19 @@ function buildStripePaymentEmailData(order, stripePayment) {
   const desiredDate = metadata.desiredDate || metadata.desired_date || metadata.selectedDate || metadata.selected_date || '';
   const hasReservedDate = Boolean(desiredDate && !String(desiredDate).toLowerCase().includes('définir') && !String(desiredDate).toLowerCase().includes('definir'));
   const offerName = metadata.offerName || metadata.offer_name || '';
+  const productType = metadata.type || order.product_type || 'booking';
+  const displayAmount = Number(metadata.originalAmount || order.amount || 0);
+  const amountForLabel = displayAmount > 0 ? displayAmount : amount;
 
   return {
+    productType,
     orderNumber: metadata.orderNumber || metadata.order_number || order.order_number,
     customerName,
     customerEmail: stripePayment.customer_details?.email || stripePayment.customer_email || stripePayment.receipt_email || metadata.customerEmail || metadata.customer_email || order.customer_email,
     customerPhone: order.customer_phone || '',
     productName: formula?.title || formula?.name || offerName || order.title || order.product_type || 'Réservation Spotykite',
     formulaName: formula?.title || formula?.name || offerName || order.title || 'Stage Spotykite',
-    amountLabel: new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(amount),
+    amountLabel: new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(amountForLabel),
     schoolName,
     schoolPhone,
     schoolEmail,
@@ -2059,8 +2629,66 @@ function buildStripePaymentEmailData(order, stripePayment) {
     dateToDefine: !hasReservedDate,
     sessionId: stripePayment.id,
     paymentIntent: stripePayment.payment_intent || stripePayment.id || order.payment_id || '',
+    voucherToken: order.voucher_token || metadata.voucherToken || metadata.voucher_token || '',
+    voucherUrl: order.voucher_token ? voucherUrl(order.voucher_token) : '',
+    buyerFirstname: metadata.buyerFirstname || order.customer_firstname || '',
+    recipientName: metadata.recipientName || metadata.beneficiaryName || '',
+    recipientEmail: metadata.recipientEmail || metadata.beneficiaryEmail || '',
+    giftMessage: metadata.message || '',
+    giftCardCode: metadata.giftCardCode || '',
+    giftCardExpiresAt: metadata.giftCardExpiresAt || '',
+    giftCardUseUrl: metadata.giftCardCode ? giftCardUseUrl(metadata.giftCardCode) : '',
+    purchaseDate: order.paid_at || order.created_at || metadata.purchaseDate || '',
+    purchaseDateLabel: formatEmailDate(order.paid_at || order.created_at || metadata.purchaseDate || ''),
+    giftCardExpiresAtLabel: formatEmailDate(metadata.giftCardExpiresAt || ''),
+    giftStage: metadata.giftStage || '',
+    giftFormula: metadata.giftFormula || '',
+    giftCenter: metadata.giftCenter || '',
+    giftDepartment: metadata.giftDepartment || '',
     metadata
   };
+}
+
+function giftCardBuyerHtml(data) {
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.55;color:#12385C;max-width:680px">
+      <h1 style="font-size:24px;margin:0 0 12px">Votre carte cadeau Spotykite est prête</h1>
+      <p>Bonjour${data.buyerFirstname ? ` ${escapeHtml(data.buyerFirstname)}` : ''},</p>
+      <p>Merci pour votre commande.</p>
+      <p>Votre carte cadeau Spotykite est prête. Vous la trouverez en pièce jointe de cet email.</p>
+      <p>Vous pouvez la transmettre au bénéficiaire de votre choix. Il pourra l’utiliser directement sur Spotykite dans l’onglet “J’ai une carte cadeau”.</p>
+      <h2 style="font-size:18px;margin-top:24px">Récapitulatif</h2>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;margin-top:18px">
+        ${emailRows([
+          ['Numéro de commande', data.orderNumber],
+          ['Montant', data.amountLabel],
+          ['Date d’achat', data.purchaseDateLabel || '-'],
+          ['Date d’expiration', data.giftCardExpiresAtLabel || (data.giftCardExpiresAt ? formatEmailDate(data.giftCardExpiresAt) : '-')]
+        ])}
+      </table>
+      <p style="margin-top:24px">À très vite sur le spot,<br>L’équipe Spotykite</p>
+    </div>
+  `;
+}
+
+function giftStageBuyerHtml(data) {
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.55;color:#12385C;max-width:680px">
+      <h1 style="font-size:24px;margin:0 0 12px">Votre stage Spotykite à offrir est prêt</h1>
+      <p>Bonjour${data.customerName ? ` ${escapeHtml(data.customerName)}` : ''},</p>
+      <p>Merci pour votre commande. Le bon de stage à offrir est joint à cet email.</p>
+      <p>Ce document est destiné au bénéficiaire du cadeau. Il pourra le présenter au moment de l’organisation ou de la réalisation du stage.</p>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;margin-top:18px">
+        ${emailRows([
+          ['Numéro de commande', data.orderNumber],
+          ['Stage offert', data.giftStage || data.formulaName],
+          ['Formule', data.giftFormula === 'centre' ? `École précise${data.giftCenter ? ` - ${data.giftCenter}` : ''}` : 'Toute France'],
+          ['Montant', data.amountLabel]
+        ])}
+      </table>
+      <p style="margin-top:24px">À très vite sur le spot,<br>L’équipe Spotykite</p>
+    </div>
+  `;
 }
 
 function paymentCustomerHtml(data) {
@@ -2103,6 +2731,14 @@ function paymentCustomerHtml(data) {
         <p>Merci de vous présenter 15 minutes avant le début de votre séance.</p>
       `}
 
+      ${data.voucherQrCodeDataUrl ? `
+        <h2 style="font-size:18px;margin-top:28px">Bon de réservation</h2>
+        <div style="text-align:center;margin:18px 0 8px">
+          <img src="${data.voucherQrCodeDataUrl}" alt="QR code du bon de réservation Spotykite" style="display:block;width:100%;max-width:560px;margin:0 auto;border:1px solid #dbe7ef;border-radius:16px;padding:12px;background:#fff" />
+          <p style="font-weight:bold;margin:14px 0 0;color:#12385C">À présenter à votre moniteur le jour du stage.</p>
+        </div>
+      ` : ''}
+
       <p style="margin-top:24px">Votre bon de réservation Spotykite est joint à cet email.</p>
       <p>À bientôt,<br>Spotykite</p>
     </div>
@@ -2110,7 +2746,7 @@ function paymentCustomerHtml(data) {
 }
 
 async function createReservationPdf(data) {
-  const qrCode = await QRCode.toBuffer(data.orderNumber, { width: 180, margin: 1 });
+  const qrCode = await QRCode.toBuffer(data.voucherUrl || data.orderNumber, { width: 420, margin: 1 });
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 48 });
     const chunks = [];
@@ -2129,8 +2765,8 @@ async function createReservationPdf(data) {
     doc.fillColor(blue).fontSize(18).font('Helvetica-Bold').text('BON DE RÉSERVATION SPOTYKITE', 48, 126);
     doc.fillColor(muted).fontSize(11).font('Helvetica').text(`Commande : ${data.orderNumber}`, 48, 154);
 
-    doc.image(qrCode, 410, 122, { width: 110 });
-    doc.fillColor(muted).fontSize(9).text('QR Code réservation', 405, 236, { width: 120, align: 'center' });
+    doc.image(qrCode, 335, 118, { width: 180 });
+    doc.fillColor(muted).fontSize(9).text('À présenter à votre moniteur le jour du stage.', 318, 306, { width: 220, align: 'center' });
 
     let y = 210;
     y = pdfSection(doc, 'Participant', [data.customerName || '-', data.customerEmail || '', data.customerPhone || ''].filter(Boolean), y);
@@ -2143,6 +2779,62 @@ async function createReservationPdf(data) {
 
     doc.moveTo(48, y + 18).lineTo(547, y + 18).strokeColor('#D8E6EF').stroke();
     doc.fillColor(muted).fontSize(9).font('Helvetica').text('Présentez ce bon à l’école ou communiquez le numéro de commande pour retrouver rapidement votre réservation.', 48, y + 34, { width: 499 });
+
+    doc.end();
+  });
+}
+
+async function createGiftCardPdf(data) {
+  const qrCode = await QRCode.toBuffer(data.giftCardUseUrl || giftCardUseUrl(data.giftCardCode), { width: 340, margin: 1 });
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 48 });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const blue = '#12385C';
+    const turquoise = '#2DD4BF';
+    const muted = '#5B7083';
+
+    doc.rect(0, 0, doc.page.width, 104).fill(blue);
+    doc.fillColor('#FFFFFF').fontSize(26).font('Helvetica-Bold').text('Carte cadeau Spotykite', 48, 32);
+    doc.fillColor(turquoise).fontSize(12).font('Helvetica-Bold').text('UNE EXPERIENCE KITESURF VOUS A ETE OFFERTE', 48, 68);
+
+    doc.fillColor(blue).fontSize(22).font('Helvetica-Bold').text('Une expérience kitesurf vous a été offerte', 48, 136, { width: 330 });
+    if (data.recipientName) {
+      doc.fillColor(muted).fontSize(13).font('Helvetica').text(`Pour : ${data.recipientName}`, 48, 192);
+    }
+    if (data.giftMessage) {
+      doc.fillColor('#1F2A37').fontSize(12).font('Helvetica-Oblique').text(`"${data.giftMessage}"`, 48, 220, { width: 330 });
+    }
+
+    doc.image(qrCode, 355, 124, { width: 170 });
+    doc.fillColor(muted).fontSize(9).text('Scanner pour utiliser la carte cadeau', 332, 300, { width: 220, align: 'center' });
+
+    let y = 324;
+    y = pdfSection(doc, 'Montant', [data.amountLabel], y);
+    y = pdfSection(doc, 'Code carte cadeau', [data.giftCardCode || '-'], y);
+    y = pdfSection(doc, 'Date d’expiration', [data.giftCardExpiresAt ? formatEmailDate(data.giftCardExpiresAt) : '12 mois après achat'], y);
+    if (data.recipientName) {
+      y = pdfSection(doc, 'Bénéficiaire', [data.recipientName], y);
+    }
+    doc.fillColor(blue).fontSize(11).font('Helvetica-Bold').text('Cette carte cadeau est utilisable sur toutes les prestations Spotykite via le site internet, dans l’onglet “J’ai une carte cadeau”.', 48, y + 6, { width: 499 });
+
+    doc.fillColor(blue).fontSize(14).font('Helvetica-Bold').text('Modalités d’utilisation', 48, y + 58);
+    const terms = [
+      'Cette carte cadeau est valable sur Spotykite pendant 12 mois à compter de la date d’achat.',
+      'Au moment de la réservation, renseignez le code de votre carte cadeau.',
+      'Si le prix dépasse le solde disponible, le complément pourra être réglé en ligne.',
+      'Le solde restant reste utilisable jusqu’à expiration de la carte.',
+      'La réservation reste soumise aux disponibilités des écoles et aux conditions météo.'
+    ];
+    doc.fillColor('#1F2A37').fontSize(9).font('Helvetica');
+    let termY = y + 82;
+    terms.forEach((term) => {
+      doc.text(`• ${term}`, 58, termY, { width: 470 });
+      termY += 20;
+    });
 
     doc.end();
   });
@@ -2234,6 +2926,7 @@ function serializePartner(partner) {
 function serializeSchool(school) {
   const activeFormulas = Number(school.activeFormulas || 0);
   const startingPrice = school.startingPrice ? Number(school.startingPrice) : null;
+  const presentationBadges = normalizePresentationBadges(school.presentation_badges || school.presentationBadges);
   return {
     ...school,
     schoolId: school.id,
@@ -2249,6 +2942,8 @@ function serializeSchool(school) {
     starting_price: startingPrice,
     activeFormulas,
     formulas_count: activeFormulas,
+    presentationBadges,
+    presentation_badges: presentationBadges,
     visibleOnMap: hasValidCoordinates(school),
     pedagogy: school.pedagogy || '',
     spotDetails: school.spot_details || '',
@@ -2412,20 +3107,39 @@ function serializeAccommodation(item) {
 }
 
 function serializeOrder(order) {
+  const partnerPayoutStatus = order.partner_payout_status || 'not_payable';
+  const payoutLabel = partnerPayoutStatus === 'paid'
+    ? 'Payée à l’école'
+    : partnerPayoutStatus === 'payable'
+      ? 'À payer à l’école'
+      : 'Non payable';
   return {
     ...order,
     id: order.order_number || order.id,
     dbId: order.id,
+    orderNumber: order.order_number,
     customerName: `${order.customer_firstname || ''} ${order.customer_lastname || ''}`.trim(),
     customerEmail: order.customer_email,
     customerPhone: order.customer_phone,
     product: order.stage_title || order.product_type,
     offerType: order.product_type,
     partner: order.partner_name || '',
+    partnerId: order.partner_id,
     amount: order.amount,
     boughtAt: order.created_at,
     desiredDate: '',
-    paymentMethod: order.payment_provider || order.payment_status
+    paymentMethod: order.payment_provider || order.payment_status,
+    paymentStatus: order.payment_status,
+    paymentStatusLabel: order.payment_status === 'paid' ? 'Payée' : 'En attente',
+    isAbandoned: order.payment_provider === 'stripe' && order.payment_status === 'pending',
+    consumptionStatusLabel: order.consumed_at ? 'Consommée' : 'Non consommée',
+    consumedAt: order.consumed_at,
+    consumedBy: order.consumed_by,
+    consumptionMethod: order.consumption_method,
+    voucherToken: order.voucher_token,
+    partnerPayoutStatus,
+    partnerPayoutLabel: payoutLabel,
+    payableToPartner: order.payment_status === 'paid' && Boolean(order.consumed_at) && partnerPayoutStatus !== 'paid'
   };
 }
 

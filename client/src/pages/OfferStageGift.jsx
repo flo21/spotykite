@@ -30,7 +30,7 @@ export default function OfferStageGift() {
   function checkout() {
     if (!canCheckout) return;
     const params = new URLSearchParams({
-      gift: 'stage',
+      type: 'gift_stage',
       stage,
       formula,
       price: String(selectedStage?.[2] || 0)
@@ -38,7 +38,7 @@ export default function OfferStageGift() {
     if (department) params.set('department', department);
     if (center) params.set('center', center);
     if (message) params.set('message', message);
-    navigate(`/stages?${params.toString()}`);
+    navigate(`/reservation?${params.toString()}`);
   }
 
   return (

@@ -14,6 +14,7 @@ import FAQ from './pages/FAQ.jsx';
 import CGV from './pages/CGV.jsx';
 import PaymentSuccess from './pages/PaymentSuccess.jsx';
 import PaymentCancel from './pages/PaymentCancel.jsx';
+import VoucherConsume from './pages/VoucherConsume.jsx';
 
 export default function App() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
         <Route path="/cgv" element={<CGV />} />
         <Route path="/paiement-reussi" element={<PaymentSuccess />} />
         <Route path="/paiement-annule" element={<PaymentCancel />} />
+        <Route path="/voucher/consume/:token" element={<VoucherConsume />} />
       </Route>
       <Route path="/admin" element={<Admin />} />
       <Route path="/backoffice" element={<Admin />} />

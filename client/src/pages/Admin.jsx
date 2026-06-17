@@ -48,6 +48,7 @@ const blankPartner = {
   status: 'prospect',
   frontVisibility: 'active',
   bookingEnabled: true,
+  presentationBadges: [],
   schoolFormulas: {}
 };
 
@@ -93,6 +94,7 @@ const blankSchoolPartner = {
   groupLessons: true,
   wingfoilAvailable: false,
   rentalAvailable: false,
+  presentationBadges: [],
   metaTitle: '',
   metaDescription: '',
   slug: '',
@@ -172,13 +174,14 @@ export default function Admin() {
   const [editingPartnerId, setEditingPartnerId] = useState(null);
 
   const stats = useMemo(() => {
+    const realOrders = orders.filter((order) => !order.isAbandoned);
     return {
-      revenue: orders.filter((order) => order.status !== 'annulé').reduce((sum, order) => sum + order.amount, 0),
-      totalOrders: orders.length,
-      pendingOrders: orders.filter((order) => order.status === 'en attente').length,
+      revenue: realOrders.filter((order) => order.status !== 'annulé').reduce((sum, order) => sum + order.amount, 0),
+      totalOrders: realOrders.length,
+      pendingOrders: realOrders.filter((order) => order.status === 'en attente').length,
       activePartners: partners.filter((partner) => partner.status === 'actif').length,
       activeFormulas: formulas.filter((formula) => formula.active || formula.status === 'active').length,
-      commissions: orders.filter((order) => order.status !== 'annulé').reduce((sum, order) => sum + Math.round((order.amount || 0) * 0.15), 0),
+      commissions: realOrders.filter((order) => order.status !== 'annulé').reduce((sum, order) => sum + Math.round((order.amount || 0) * 0.15), 0),
       giftCardsSold: adminGiftCards.length
     };
   }, [orders, partners, adminGiftCards, formulas]);
@@ -267,6 +270,7 @@ export default function Admin() {
       status: normalizePartnerStatus(partnerForm.status) === 'actif' ? 'active' : 'inactive',
       frontVisibility: partnerForm.frontVisibility,
       bookingEnabled: partnerForm.bookingEnabled,
+      presentationBadges: partnerForm.presentationBadges || [],
       schoolFormulas: enabledSchoolFormulas(partnerForm.schoolFormulas)
     };
     if (editingPartnerId) {
@@ -305,6 +309,7 @@ export default function Admin() {
       openingPeriod: schoolPartnerForm.bestPeriod || '',
       additionalInfo: schoolPartnerForm.fullDescription,
       schoolFormulas: enabledSchoolFormulas(schoolPartnerForm.schoolFormulas),
+      presentationBadges: schoolPartnerForm.presentationBadges,
       frontVisibility: schoolPartnerForm.frontVisibility,
       bookingEnabled: schoolPartnerForm.bookingEnabled,
       status: 'active'
@@ -390,7 +395,7 @@ export default function Admin() {
           {tab === 'orders' && (
             selectedOrder
               ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} />
-              : <OrdersPage orders={orders} onSelect={setSelectedOrder} />
+              : <OrdersPage orders={orders} partners={partners} onSelect={setSelectedOrder} onConsumed={reloadAdminData} onNotice={showNotice} />
           )}
           {tab === 'partners' && (
             <PartnersPage
@@ -477,6 +482,7 @@ function AdminHeader({ tab, apiStatus }) {
 }
 
 function Dashboard({ stats, orders, partners }) {
+  const latestOrders = orders.filter((order) => !order.isAbandoned).slice(0, 5);
   return (
     <div className="grid gap-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
@@ -489,7 +495,7 @@ function Dashboard({ stats, orders, partners }) {
       </div>
       <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
         <Panel title="Dernières commandes">
-          <OrdersTable rows={orders.slice(0, 5)} compact />
+          <OrdersTable rows={latestOrders} compact />
         </Panel>
         <Panel title="Écoles à suivre">
           <div className="grid gap-3">
@@ -659,7 +665,7 @@ function ProspectsPage({ prospects, onReload, onNotice }) {
   );
 }
 
-function OrdersPage({ orders, onSelect }) {
+function OrdersPage({ orders, partners = [], onSelect, onConsumed, onNotice }) {
   const [filters, setFilters] = useState({
     search: '',
     status: '',
@@ -674,10 +680,12 @@ function OrdersPage({ orders, onSelect }) {
   });
   const [page, setPage] = useState(1);
   const pageSize = 8;
+  const realOrders = useMemo(() => orders.filter((order) => !order.isAbandoned), [orders]);
+  const abandonedOrders = useMemo(() => orders.filter((order) => order.isAbandoned), [orders]);
 
   const filteredOrders = useMemo(() => {
     const now = new Date('2026-06-03');
-    return orders.filter((order) => {
+    return realOrders.filter((order) => {
       const query = normalize(filters.search);
       const haystack = normalize([order.customerName, order.customerEmail, order.id, order.partner, order.city, order.spot].join(' '));
       const boughtAt = new Date(order.boughtAt);
@@ -695,11 +703,11 @@ function OrdersPage({ orders, onSelect }) {
       if (!matchesDateRange(boughtAt, filters.dateRange, filters.dateFrom, filters.dateTo, now)) return false;
       return true;
     });
-  }, [orders, filters]);
+  }, [realOrders, filters]);
 
   const paginatedOrders = paginate(filteredOrders, page, pageSize);
-  const partners = unique(orders.map((order) => order.partner));
-  const cities = unique(orders.map((order) => `${order.city} / ${order.spot}`));
+  const partnerOptions = unique(realOrders.map((order) => order.partner));
+  const cities = unique(realOrders.map((order) => `${order.city} / ${order.spot}`));
 
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
@@ -712,31 +720,86 @@ function OrdersPage({ orders, onSelect }) {
   }
 
   return (
-    <Panel title="Toutes les commandes">
-      <FilterBar
-        title="Filtres commandes"
-        count={filteredOrders.length}
-        total={orders.length}
-        onReset={resetFilters}
-      >
-        <div className="grid gap-3 lg:grid-cols-[1.3fr_repeat(4,1fr)]">
-          <SearchField value={filters.search} onChange={(value) => updateFilter('search', value)} placeholder="Nom, email, commande, école, ville..." />
-          <SelectFilter value={filters.status} onChange={(value) => updateFilter('status', value)} options={['payée', 'en attente', 'annulée', 'remboursée']} placeholder="Statut" />
-          <SelectFilter value={filters.dateRange} onChange={(value) => updateFilter('dateRange', value)} options={['aujourd’hui', '7 derniers jours', '30 derniers jours', 'période personnalisée']} placeholder="Date" />
-          <SelectFilter value={filters.partner} onChange={(value) => updateFilter('partner', value)} options={partners} placeholder="École" />
-          <SelectFilter value={filters.offerType} onChange={(value) => updateFilter('offerType', value)} options={['stage', 'séance', 'carte cadeau']} placeholder="Type d’offre" />
-        </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-5">
-          <SelectFilter value={filters.city} onChange={(value) => updateFilter('city', value)} options={cities} placeholder="Ville / spot" />
-          <input className="field" type="number" placeholder="Montant min." value={filters.minAmount} onChange={(event) => updateFilter('minAmount', event.target.value)} />
-          <input className="field" type="number" placeholder="Montant max." value={filters.maxAmount} onChange={(event) => updateFilter('maxAmount', event.target.value)} />
-          <input className="field" type="date" value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} disabled={filters.dateRange !== 'période personnalisée'} />
-          <input className="field" type="date" value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} disabled={filters.dateRange !== 'période personnalisée'} />
-        </div>
-      </FilterBar>
-      <OrdersTable rows={paginatedOrders} onSelect={onSelect} />
-      <Pagination page={page} pageSize={pageSize} total={filteredOrders.length} onPageChange={setPage} />
-    </Panel>
+    <div className="grid gap-6">
+      <Panel title="Toutes les commandes">
+        <ManualConsumptionPanel partners={partners} onConsumed={onConsumed} onNotice={onNotice} />
+        <FilterBar
+          title="Filtres commandes"
+          count={filteredOrders.length}
+          total={realOrders.length}
+          onReset={resetFilters}
+        >
+          <div className="grid gap-3 lg:grid-cols-[1.3fr_repeat(4,1fr)]">
+            <SearchField value={filters.search} onChange={(value) => updateFilter('search', value)} placeholder="Nom, email, commande, école, ville..." />
+            <SelectFilter value={filters.status} onChange={(value) => updateFilter('status', value)} options={['payée', 'consumed', 'en attente', 'annulée', 'remboursée']} placeholder="Statut" />
+            <SelectFilter value={filters.dateRange} onChange={(value) => updateFilter('dateRange', value)} options={['aujourd’hui', '7 derniers jours', '30 derniers jours', 'période personnalisée']} placeholder="Date" />
+            <SelectFilter value={filters.partner} onChange={(value) => updateFilter('partner', value)} options={partnerOptions} placeholder="École" />
+            <SelectFilter value={filters.offerType} onChange={(value) => updateFilter('offerType', value)} options={['stage', 'séance', 'carte cadeau']} placeholder="Type d’offre" />
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+            <SelectFilter value={filters.city} onChange={(value) => updateFilter('city', value)} options={cities} placeholder="Ville / spot" />
+            <input className="field" type="number" placeholder="Montant min." value={filters.minAmount} onChange={(event) => updateFilter('minAmount', event.target.value)} />
+            <input className="field" type="number" placeholder="Montant max." value={filters.maxAmount} onChange={(event) => updateFilter('maxAmount', event.target.value)} />
+            <input className="field" type="date" value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} disabled={filters.dateRange !== 'période personnalisée'} />
+            <input className="field" type="date" value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} disabled={filters.dateRange !== 'période personnalisée'} />
+          </div>
+        </FilterBar>
+        <OrdersTable rows={paginatedOrders} onSelect={onSelect} />
+        <Pagination page={page} pageSize={pageSize} total={filteredOrders.length} onPageChange={setPage} />
+      </Panel>
+
+      {abandonedOrders.length > 0 && (
+        <Panel title="Commandes abandonnées">
+          <OrdersTable rows={abandonedOrders.slice(0, 10)} onSelect={onSelect} compact />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function ManualConsumptionPanel({ partners, onConsumed, onNotice }) {
+  const [schoolId, setSchoolId] = useState('');
+  const [orderNumber, setOrderNumber] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!schoolId || !orderNumber.trim()) {
+      onNotice?.('error', 'Sélectionnez une école et renseignez un numéro de commande.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await api.consumePartnerOrder(schoolId, { orderNumber: orderNumber.trim() });
+      setOrderNumber('');
+      onNotice?.('success', 'Bon marqué comme consommé.');
+      await onConsumed?.();
+    } catch (error) {
+      onNotice?.('error', error.message || 'Impossible de valider ce bon.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="mb-5 rounded-3xl border border-turquoise/30 bg-sky/70 p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="grid min-w-[220px] flex-1 gap-2">
+          <span className="text-xs font-black uppercase text-ocean">École partenaire</span>
+          <select className="field bg-white" value={schoolId} onChange={(event) => setSchoolId(event.target.value)}>
+            <option value="">Sélectionner une école</option>
+            {partners.map((partner) => <option key={partner.id} value={partner.id}>{partner.name}</option>)}
+          </select>
+        </label>
+        <label className="grid min-w-[220px] flex-1 gap-2">
+          <span className="text-xs font-black uppercase text-ocean">Numéro de commande</span>
+          <input className="field bg-white" value={orderNumber} onChange={(event) => setOrderNumber(event.target.value)} placeholder="SK-XXXXXX" />
+        </label>
+        <button type="submit" className="btn-primary justify-center disabled:opacity-60" disabled={loading}>
+          {loading ? 'Validation...' : 'Marquer comme consommé'}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -746,7 +809,7 @@ function OrdersTable({ rows, onSelect, compact = false }) {
       <table className="w-full min-w-[1180px] text-left text-sm">
         <thead className="bg-sky/60 text-xs uppercase text-muted">
           <tr>
-            {['ID', 'Client', 'Email', 'Téléphone', 'Produit', 'Ville / spot', 'École', 'Montant', 'Statut', 'Achat', 'Date souhaitée', ''].map((label) => (
+            {['ID', 'Client', 'Email', 'Téléphone', 'Produit', 'Ville / spot', 'École', 'Montant', 'Statut', 'Bon', 'Règlement école', 'Achat', 'Date souhaitée', ''].map((label) => (
               <th key={label} className="px-4 py-3 font-black">{label}</th>
             ))}
           </tr>
@@ -763,6 +826,8 @@ function OrdersTable({ rows, onSelect, compact = false }) {
               <td className="px-4 py-4">{order.partner}</td>
               <td className="px-4 py-4 font-black">{formatCurrency(order.amount)}</td>
               <td className="px-4 py-4"><StatusBadge value={order.status} /></td>
+              <td className="px-4 py-4"><StatusBadge value={order.consumptionStatusLabel} /></td>
+              <td className="px-4 py-4"><StatusBadge value={order.partnerPayoutLabel} /></td>
               <td className="px-4 py-4">{formatDate(order.boughtAt)}</td>
               <td className="px-4 py-4">{order.desiredDate ? formatDate(order.desiredDate) : '-'}</td>
               <td className="px-4 py-4">
@@ -796,6 +861,10 @@ function OrderDetail({ order, onBack }) {
           <Detail label="École associée" value={order.partner} />
           <Detail label="Montant payé" value={formatCurrency(order.amount)} />
           <Detail label="Statut" value={order.status} />
+          <Detail label="Bon de réservation" value={order.consumptionStatusLabel} />
+          <Detail label="Consommé le" value={order.consumedAt ? formatDate(order.consumedAt) : '-'} />
+          <Detail label="Méthode de validation" value={order.consumptionMethod || '-'} />
+          <Detail label="Règlement école" value={order.partnerPayoutLabel} />
           <Detail label="Date d'achat" value={formatDate(order.boughtAt)} />
           <Detail label="Date souhaitée" value={order.desiredDate ? formatDate(order.desiredDate) : '-'} />
           <Detail label="Paiement" value={order.paymentMethod} />
@@ -983,6 +1052,12 @@ function CreatePartnerPage({ form, setForm, onSubmit, createdPartner, partners, 
           <AdminInput label="Email" type="email" value={form.email} onChange={(value) => update('email', value)} />
         </div>
         <div className="mt-3 grid gap-3">
+          <TagEditor
+            label="Badges de présentation"
+            value={form.presentationBadges}
+            onChange={(presentationBadges) => update('presentationBadges', presentationBadges)}
+            placeholder="Ex : Stage de kitesurf"
+          />
           <AdminTextarea label="Description courte (150 caractères)" maxLength={150} value={form.shortDescription} onChange={(value) => update('shortDescription', value)} />
           <AdminTextarea label="Description complète" value={form.fullDescription} onChange={(value) => update('fullDescription', value)} />
         </div>
@@ -1526,7 +1601,7 @@ function GiftCardsPage({ cards }) {
         <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-sky/60 text-xs uppercase text-muted">
             <tr>
-              {['Code', 'Acheteur', 'Email acheteur', 'Bénéficiaire', 'Montant', "Date d'achat", "Date d'expiration", 'Statut', 'Commande liée'].map((label) => (
+              {['Code', 'Acheteur', 'Email acheteur', 'Bénéficiaire', 'Montant initial', 'Solde restant', "Date d'achat", "Date d'expiration", 'Statut', 'Commande liée'].map((label) => (
                 <th key={label} className="px-4 py-3 font-black">{label}</th>
               ))}
             </tr>
@@ -1539,6 +1614,7 @@ function GiftCardsPage({ cards }) {
                 <td className="px-4 py-4">{card.buyerEmail}</td>
                 <td className="px-4 py-4">{card.recipient}</td>
                 <td className="px-4 py-4 font-black">{formatCurrency(card.amount)}</td>
+                <td className="px-4 py-4 font-black">{formatCurrency(card.remainingAmount)}</td>
                 <td className="px-4 py-4">{formatDate(card.boughtAt)}</td>
                 <td className="px-4 py-4">{formatDate(card.expiresAt)}</td>
                 <td className="px-4 py-4"><StatusBadge value={card.status} /></td>
@@ -1580,6 +1656,61 @@ function AdminTextarea({ label, value, onChange, rows = 4, maxLength, placeholde
       {label}
       <textarea className="field min-h-28" rows={rows} maxLength={maxLength} placeholder={placeholder || label} value={value} onChange={(event) => onChange(event.target.value)} />
       {maxLength && <span className="text-right text-xs font-bold text-muted">{String(value).length}/{maxLength}</span>}
+    </label>
+  );
+}
+
+function TagEditor({ label, value = [], onChange, placeholder = 'Ajouter un badge' }) {
+  const [draft, setDraft] = useState('');
+  const tags = Array.isArray(value) ? value : String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+
+  function addTag() {
+    const next = draft.trim();
+    if (!next || tags.some((tag) => tag.toLowerCase() === next.toLowerCase())) {
+      setDraft('');
+      return;
+    }
+    onChange([...tags, next]);
+    setDraft('');
+  }
+
+  function removeTag(tagToRemove) {
+    onChange(tags.filter((tag) => tag !== tagToRemove));
+  }
+
+  return (
+    <label className="grid gap-2 text-sm font-black text-navy">
+      {label}
+      <div className="rounded-2xl border border-border bg-bg p-3">
+        <div className="flex flex-wrap gap-2">
+          {tags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => removeTag(tag)}
+              className="rounded-full border border-turquoise/35 bg-white px-3 py-1 text-xs font-black uppercase text-navy"
+              title="Cliquer pour retirer"
+            >
+              {tag} ×
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            className="field bg-white"
+            value={draft}
+            placeholder={placeholder}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                addTag();
+              }
+            }}
+          />
+          <button type="button" className="btn-secondary justify-center" onClick={addTag}>Ajouter</button>
+        </div>
+      </div>
     </label>
   );
 }
@@ -1634,6 +1765,12 @@ function StatusBadge({ value }) {
     payé: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     confirmé: 'bg-sky text-ocean border-turquoise/30',
     'en attente': 'bg-amber-50 text-amber-700 border-amber-200',
+    consumed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    Consommée: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'Non consommée': 'bg-amber-50 text-amber-700 border-amber-200',
+    'À payer à l’école': 'bg-blue-50 text-blue-700 border-blue-200',
+    'Payée à l’école': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'Non payable': 'bg-slate-50 text-slate-700 border-slate-200',
     annulé: 'bg-red-50 text-red-700 border-red-200',
     prospect: 'bg-slate-50 text-slate-700 border-slate-200',
     partenaire: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -1789,16 +1926,25 @@ function normalizeAdminOrder(order) {
     customerName: order.customerName || `${order.customer_firstname || ''} ${order.customer_lastname || ''}`.trim(),
     customerEmail: order.customerEmail || order.customer_email,
     customerPhone: order.customerPhone || order.customer_phone || '',
-    product: order.product || order.stage_title || order.product_type,
+    product: productTypeLabel(order.product || order.stage_title || order.product_type),
     offerType: order.offerType || order.product_type,
     city: order.city || '',
     spot: order.spot || '',
     partner: order.partner || order.partner_name || '',
+    partnerId: order.partnerId || order.partner_id,
     amount: order.amount || 0,
     status: order.status || 'en attente',
     boughtAt: order.boughtAt || order.created_at,
     desiredDate: order.desiredDate || '',
     paymentMethod: order.paymentMethod || order.payment_provider || order.payment_status || '',
+    paymentStatus: order.paymentStatus || order.payment_status || '',
+    isAbandoned: Boolean(order.isAbandoned ?? (order.payment_provider === 'stripe' && order.payment_status === 'pending')),
+    consumptionStatusLabel: order.consumptionStatusLabel || (order.consumed_at || order.consumedAt ? 'Consommée' : 'Non consommée'),
+    consumedAt: order.consumedAt || order.consumed_at || '',
+    consumedBy: order.consumedBy || order.consumed_by || '',
+    consumptionMethod: order.consumptionMethod || order.consumption_method || '',
+    partnerPayoutStatus: order.partnerPayoutStatus || order.partner_payout_status || 'not_payable',
+    partnerPayoutLabel: order.partnerPayoutLabel || (order.partner_payout_status === 'payable' ? 'À payer à l’école' : order.partner_payout_status === 'paid' ? 'Payée à l’école' : 'Non payable'),
     notes: order.notes || ''
   };
 }
@@ -1877,6 +2023,7 @@ function schoolToSchoolForm(school, formulas = []) {
     metaTitle: school.metaTitle || '',
     metaDescription: school.metaDescription || '',
     slug: school.slug || '',
+    presentationBadges: school.presentationBadges || school.presentation_badges || [],
     frontVisibility: school.frontVisibility || school.front_visibility || 'active',
     bookingEnabled: school.bookingEnabled ?? school.booking_enabled ?? true,
     schoolFormulas: formulasToSchoolFormulas(formulas)
@@ -1895,7 +2042,16 @@ function prospectTypeLabel(value) {
   return {
     booking: 'réservation',
     gift_card: 'carte cadeau',
+    gift_stage: 'stage offert',
     lead_request: 'demande école'
+  }[value] || value || '-';
+}
+
+function productTypeLabel(value) {
+  return {
+    booking: 'booking',
+    gift_card: 'gift_card',
+    gift_stage: 'gift_stage'
   }[value] || value || '-';
 }
 
@@ -1974,9 +2130,10 @@ function normalizeFormulaType(value = '') {
 
 function normalizeAdminGiftCard(card) {
   const normalizedStatus = {
-    active: 'non utilisée',
-    redeemed: 'utilisée',
-    expired: 'expirée',
+    active: 'active',
+    used: 'used',
+    redeemed: 'used',
+    expired: 'expired',
     cancelled: 'annulée'
   }[card.status] || card.status;
 
@@ -1985,7 +2142,8 @@ function normalizeAdminGiftCard(card) {
     buyer: card.buyer || card.buyerName || `${card.buyer_firstname || ''} ${card.buyer_lastname || ''}`.trim(),
     buyerEmail: card.buyerEmail || card.buyer_email,
     recipient: card.recipient || card.recipientName || card.beneficiary_name,
-    amount: card.amount || 0,
+    amount: card.initialAmount || card.initial_amount || card.amount || 0,
+    remainingAmount: card.remainingAmount ?? card.remaining_amount ?? card.amount ?? 0,
     boughtAt: card.boughtAt || card.createdAt || card.created_at,
     expiresAt: card.expiresAt || card.expires_at,
     status: normalizedStatus,
