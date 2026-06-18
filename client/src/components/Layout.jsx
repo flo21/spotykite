@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { CalendarCheck, ChevronDown, MapPin, Menu, Phone, ShoppingBag, User, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
@@ -20,6 +20,7 @@ export default function Layout() {
   const [spotStats, setSpotStats] = useState({ regions: [], cities: [], stageTypes: [] });
   const [statsStatus, setStatsStatus] = useState('loading');
   const phoneNumber = import.meta.env.VITE_SPOTYKITE_PHONE || '+33184808080';
+  const location = useLocation();
 
   useEffect(() => {
     let active = true;
@@ -84,6 +85,16 @@ export default function Layout() {
     setMobileMega(null);
   }
 
+  function goHomeTop() {
+    setOpen(false);
+    setCartOpen(false);
+    setActiveMega(null);
+    setMobileMega(null);
+    if (location.pathname === '/' && !location.hash) {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }
+  }
+
   function refreshMobileActionState() {
     setCurrentBooking(readStorageItem('currentBooking', null));
     setRecentlyViewedSchools(readStorageItem('recentlyViewedSchools', []));
@@ -93,7 +104,7 @@ export default function Layout() {
     <div className="min-h-screen bg-bg text-text">
       <header className="sticky inset-x-0 top-0 z-[1000] border-b border-white/10 bg-[#12385C] text-white shadow-[0_2px_12px_rgba(0,0,0,0.12)]">
         <div className="mx-auto flex max-w-[1540px] items-center justify-between px-5 py-2.5 sm:px-10 lg:px-16">
-          <Link to="/" className="flex items-center text-2xl font-black leading-none tracking-[0] text-white no-underline" aria-label="SpotyKite">
+          <Link to="/" onClick={goHomeTop} className="flex items-center text-2xl font-black leading-none tracking-[0] text-white no-underline" aria-label="SpotyKite">
             SpotyKite
           </Link>
 

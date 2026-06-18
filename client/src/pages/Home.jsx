@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRight, BadgeEuro, BedDouble, CreditCard, Gift, MapPin, Search, Sparkles, Trophy, Wind } from 'lucide-react';
 import Map, { Marker, NavigationControl, Popup } from 'react-map-gl/mapbox';
 import heroKitesurf from '../assets/spotykite-hero-kitesurf.png';
@@ -90,6 +90,12 @@ export default function Home() {
   const [regionStatsStatus, setRegionStatsStatus] = useState('loading');
   const [contentBlocks, setContentBlocks] = useState({});
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useLayoutEffect(() => {
+    if (location.hash) return;
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [location.hash]);
 
   useEffect(() => {
     let active = true;
@@ -111,7 +117,7 @@ export default function Home() {
         if (!active) return;
         const nextSchools = (data || []).filter((school) => school.latitude && school.longitude);
         setSchools(nextSchools);
-        setSelectedSchool(nextSchools[0] || null);
+        setSelectedSchool(null);
       })
       .catch(() => {
         if (!active) return;
@@ -175,7 +181,7 @@ export default function Home() {
         onSchoolSelect={setSelectedSchool}
         onResetRegion={() => {
           setSelectedRegion('');
-          setSelectedSchool(schools[0] || null);
+          setSelectedSchool(null);
         }}
       />
 
@@ -381,7 +387,7 @@ function SchoolsMapSection({ regionStats, regionStatsStatus, selectedRegion, sel
   const regions = regionStats.length ? regionStats : fallbackRegionStats(allSchools);
 
   return (
-    <section className="overflow-hidden border-y border-border bg-white">
+    <section id="map" className="overflow-hidden border-y border-border bg-white">
       <div className="grid min-h-[650px] lg:h-[720px] lg:grid-cols-2">
         <div className="flex items-center bg-gradient-to-br from-navy via-[#0c3c60] to-ocean px-5 py-12 text-white sm:px-10 lg:px-16">
           <div className="w-full">
