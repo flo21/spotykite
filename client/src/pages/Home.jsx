@@ -248,7 +248,7 @@ function Hero({ department, setDepartment, searchLocation, setSearchLocation, on
                 Carte cadeau Spotykite
                 <span className="text-xs font-bold text-navy">199 € · valable 1 an · utilisable partout en France</span>
               </div>
-              <Link to="/carte-cadeau" className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2 text-sm font-black text-navy transition hover:bg-primaryHover">
+              <Link to="/offrir" className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2 text-sm font-black text-navy transition hover:bg-primaryHover">
                 Go <ArrowRight size={16} />
               </Link>
             </div>
@@ -274,7 +274,7 @@ function GiftCardSection({ content = {} }) {
           <p className="text-xl font-black text-white">{contentValue(content, 'gift', 'subtitle', 'Le cadeau idéal pour découvrir le kitesurf partout en France.')}</p>
           <p className="max-w-xl text-white/78">{contentValue(content, 'gift', 'text', 'Offrez une carte cadeau valable 1 an dans les écoles Spotykite.')}</p>
           <div className="flex flex-wrap items-center gap-3">
-            <Link to="/carte-cadeau" className="btn-primary justify-center">
+            <Link to="/offrir" className="btn-primary justify-center">
               <Gift size={18} /> Offrir une carte cadeau
             </Link>
             <span className="rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-bold text-white/82">Carte cadeau numérique envoyée par e-mail.</span>

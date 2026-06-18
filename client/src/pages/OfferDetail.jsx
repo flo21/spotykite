@@ -77,7 +77,7 @@ export default function OfferDetail() {
               <input className="field" required placeholder="Telephone" value={booking.customerPhone} onChange={(event) => setBooking({ ...booking, customerPhone: event.target.value })} />
               <input className="field" required type="date" value={booking.date} onChange={(event) => setBooking({ ...booking, date: event.target.value })} />
               <button className="btn-primary justify-center" type="submit">Reserver maintenant</button>
-              <Link to="/carte-cadeau" className="btn-secondary justify-center"><Gift size={18} /> Offrir cette experience</Link>
+              <Link to="/offrir" className="btn-secondary justify-center"><Gift size={18} /> Offrir cette experience</Link>
             </form>
             {created && <p className="mt-4 rounded-2xl border border-primary/35 bg-primary/10 p-3 text-sm font-bold text-primary">Reservation creee. Reference #{created.id}</p>}
           </aside>

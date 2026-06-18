@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect } from 'react';
-import { Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Layout from './components/Layout.jsx';
 import Home from './pages/Home.jsx';
 import Listings from './pages/Listings.jsx';
@@ -35,8 +35,9 @@ export default function App() {
           <Route path="/reservation" element={<Reservation />} />
           <Route path="/reservation/reprendre/:token" element={<Reservation />} />
           <Route path="/offres/:id" element={<OfferDetail />} />
-          <Route path="/cadeau" element={<GiftCard />} />
-          <Route path="/carte-cadeau" element={<GiftCard />} />
+          <Route path="/offrir" element={<GiftCard />} />
+          <Route path="/cadeau" element={<Navigate to="/offrir" replace />} />
+          <Route path="/carte-cadeau" element={<Navigate to="/offrir" replace />} />
           <Route path="/offrir-un-stage" element={<OfferStageGift />} />
           <Route path="/utiliser-carte-cadeau" element={<RedeemGiftCard />} />
           <Route path="/jai-une-carte-cadeau" element={<RedeemGiftCard />} />

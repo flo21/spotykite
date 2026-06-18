@@ -241,7 +241,7 @@ function ActionPanelContent({ school, formulas, selectedFormula, selectedFormula
       <Link to={reservationUrl(school, selectedFormula)} className={`btn-primary mt-4 w-full justify-center ${!selectedFormula ? 'pointer-events-none opacity-60' : ''}`} aria-disabled={!selectedFormula}>
         Réserver maintenant
       </Link>
-      <Link to="/carte-cadeau" className="btn-secondary mt-3 w-full justify-center"><Gift size={18} /> Offrir un stage</Link>
+      <Link to="/offrir" className="btn-secondary mt-3 w-full justify-center"><Gift size={18} /> Offrir un stage</Link>
       <p className="mt-3 flex items-center gap-2 text-sm font-black text-navy">
         <CheckCircle2 size={17} className="shrink-0 text-turquoise" />
         Paiement sécurisé Stripe
@@ -609,7 +609,7 @@ function GiftCardConversion() {
             ))}
           </div>
         </div>
-        <Link to="/carte-cadeau" className="btn-primary justify-center text-center"><Gift size={18} /> Offrir une carte cadeau</Link>
+        <Link to="/offrir" className="btn-primary justify-center text-center"><Gift size={18} /> Offrir une carte cadeau</Link>
       </div>
     </section>
   );
@@ -692,7 +692,7 @@ function FinalCta({ school, selectedFormula, canBook }) {
       <div className="mt-6 flex flex-wrap gap-3">
         {canBook ? <Link to={reservationUrl(school, selectedFormula)} className="btn-primary justify-center lg:hidden">Réserver un stage</Link> : <a href="#availability-request" className="btn-primary justify-center">Recevoir les disponibilités</a>}
         {canBook && <a href="#reservation" className="btn-primary hidden justify-center lg:inline-flex">Réserver un stage</a>}
-        <Link to="/carte-cadeau" className="btn-secondary justify-center">Offrir un stage</Link>
+        <Link to="/offrir" className="btn-secondary justify-center">Offrir un stage</Link>
       </div>
     </section>
   );

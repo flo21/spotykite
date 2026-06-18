@@ -104,24 +104,23 @@ export default function Layout() {
     <div className="min-h-screen bg-bg text-text">
       <header className="sticky inset-x-0 top-0 z-[1000] border-b border-white/10 bg-[#12385C] text-white shadow-[0_2px_12px_rgba(0,0,0,0.12)]">
         <div className="mx-auto flex max-w-[1540px] items-center justify-between px-5 py-2.5 sm:px-10 lg:px-16">
-          <Link to="/" onClick={goHomeTop} className="flex items-center text-2xl font-black leading-none tracking-[0] text-white no-underline" aria-label="SpotyKite">
-            SpotyKite
-          </Link>
+          <div className="flex items-center gap-8 xl:gap-10">
+            <Link to="/" onClick={goHomeTop} className="flex items-center text-2xl font-black leading-none tracking-[0] text-white no-underline" aria-label="SpotyKite">
+              SpotyKite
+            </Link>
 
-          <nav className="hidden items-center gap-4 text-sm font-black lg:flex">
-            <DesktopMegaTrigger label="Les spots" active={activeMega === 'spots'} onOpen={() => setActiveMega('spots')} onClose={() => setActiveMega(null)}>
-              <SpotsMegaMenu stats={stats} status={statsStatus} />
-            </DesktopMegaTrigger>
-            <DesktopMegaTrigger label="Les stages" active={activeMega === 'stages'} onOpen={() => setActiveMega('stages')} onClose={() => setActiveMega(null)}>
-              <StagesMegaMenu stats={stats} status={statsStatus} />
-            </DesktopMegaTrigger>
-            <NavLink to="/carte-cadeau" className={({ isActive }) => (isActive ? 'text-primary' : 'text-white/85 hover:text-primary')}>
-              Carte cadeau
-            </NavLink>
-            <NavLink to="/jai-une-carte-cadeau" className={({ isActive }) => (isActive ? 'text-primary' : 'text-white/85 hover:text-primary')}>
-              J’ai une carte cadeau
-            </NavLink>
-          </nav>
+            <nav className="hidden items-center gap-5 text-sm font-black xl:gap-6 lg:flex">
+              <DesktopMegaTrigger label="Les spots" active={activeMega === 'spots'} onOpen={() => setActiveMega('spots')} onClose={() => setActiveMega(null)}>
+                <SpotsMegaMenu stats={stats} status={statsStatus} />
+              </DesktopMegaTrigger>
+              <DesktopMegaTrigger label="Les stages" active={activeMega === 'stages'} onOpen={() => setActiveMega('stages')} onClose={() => setActiveMega(null)}>
+                <StagesMegaMenu stats={stats} status={statsStatus} />
+              </DesktopMegaTrigger>
+              <NavLink to="/jai-une-carte-cadeau" className={({ isActive }) => `whitespace-nowrap py-4 ${isActive ? 'text-primary' : 'text-white/85 hover:text-primary'}`}>
+                J’ai une carte cadeau
+              </NavLink>
+            </nav>
+          </div>
 
           <div className="hidden items-center gap-2 lg:flex">
             <NavLink to="/faq" className={({ isActive }) => `px-2 text-sm font-black ${isActive ? 'text-primary' : 'text-white/85 hover:text-primary'}`}>
@@ -133,7 +132,7 @@ export default function Layout() {
             <Link to="/admin" className="inline-grid h-9 w-9 place-items-center rounded-full border border-white/35 bg-white/5 text-white transition hover:border-primary hover:text-primary" aria-label="Compte">
               <User size={14} />
             </Link>
-            <Link to="/offrir-un-stage" className="inline-flex min-h-9 items-center gap-2 rounded-full bg-primary px-5 py-2 text-xs font-black text-navy transition hover:bg-primaryHover">
+            <Link to="/offrir" className="inline-flex min-h-9 items-center gap-2 rounded-full bg-primary px-5 py-2 text-xs font-black text-navy transition hover:bg-primaryHover">
               <CalendarCheck size={15} />
               Offrir un stage de kitesurf
             </Link>
@@ -187,10 +186,9 @@ export default function Layout() {
               <MobileMega label="Les stages" id="stages" current={mobileMega} setCurrent={setMobileMega}>
                 <StagesMegaMenu mobile stats={stats} status={statsStatus} onNavigate={closeMobile} />
               </MobileMega>
-              <Link to="/carte-cadeau" onClick={closeMobile} className="mobile-nav-link">Offrir une carte cadeau</Link>
-              <Link to="/utiliser-carte-cadeau" onClick={closeMobile} className="mobile-nav-link">J'ai une carte cadeau</Link>
+              <Link to="/jai-une-carte-cadeau" onClick={closeMobile} className="mobile-nav-link">J'ai une carte cadeau</Link>
               <Link to="/faq" onClick={closeMobile} className="mobile-nav-link">FAQ</Link>
-              <Link to="/offrir-un-stage" onClick={closeMobile} className="btn-primary justify-center">Offrir un stage de kitesurf</Link>
+              <Link to="/offrir" onClick={closeMobile} className="btn-primary justify-center">Offrir un stage de kitesurf</Link>
               <div className="my-5 rounded-2xl border border-white/12 bg-white/[0.08] px-4 py-4 text-center text-white">
                 <div className="flex justify-center gap-1 text-[19px] leading-none text-[#FFC107]" aria-label="5 étoiles">
                   <span>★</span>
@@ -295,7 +293,7 @@ function readStorageItem(key, fallback) {
 function DesktopMegaTrigger({ label, active, onOpen, onClose, children }) {
   return (
     <div className="relative" onMouseEnter={onOpen} onMouseLeave={onClose}>
-      <button className={`flex items-center gap-1 py-4 font-bold ${active ? 'text-primary' : 'text-white/85 hover:text-primary'}`}>
+      <button className={`flex items-center gap-1 whitespace-nowrap py-4 font-bold ${active ? 'text-primary' : 'text-white/85 hover:text-primary'}`}>
         {label} <ChevronDown size={16} />
       </button>
       {active && (

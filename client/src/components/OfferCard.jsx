@@ -19,7 +19,7 @@ export default function OfferCard({ offer }) {
         </div>
         <div className="mt-5 grid gap-2 sm:grid-cols-2">
           <Link to={`/offres/${offer.id}`} className="btn-primary justify-center text-sm">Voir les disponibilites</Link>
-          <Link to="/carte-cadeau" className="btn-secondary justify-center text-sm"><Gift size={16} /> Offrir</Link>
+          <Link to="/offrir" className="btn-secondary justify-center text-sm"><Gift size={16} /> Offrir</Link>
         </div>
       </div>
     </article>
