@@ -315,14 +315,38 @@ app.delete('/api/partners/:id', (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/orders', (_req, res) => {
-  res.json(rows(`
+app.get('/api/orders', (req, res) => {
+  const status = String(req.query.status || '').trim();
+  const paidOrders = rows(`
     SELECT orders.*, stages.title AS stage_title, partners.name AS partner_name
     FROM orders
     LEFT JOIN stages ON stages.id = orders.stage_id
     LEFT JOIN partners ON partners.id = orders.partner_id
     ORDER BY orders.created_at DESC
-  `).map(serializeOrder));
+  `).map(serializeOrder);
+  const initiatedOrders = rows(`
+    SELECT initiated_orders.*, schools.name AS schoolName, offers.title AS formulaName
+    FROM initiated_orders
+    LEFT JOIN schools ON schools.id = initiated_orders.school_id
+    LEFT JOIN offers ON offers.id = initiated_orders.formula_id
+    WHERE initiated_orders.payment_status != 'paid'
+    ORDER BY initiated_orders.updated_at DESC
+  `).map(serializeInitiatedAsOrder);
+  const allOrders = [...paidOrders, ...initiatedOrders]
+    .filter((order) => {
+      if (!status || status === 'all') return true;
+      if (status === 'initiated') return order.paymentStatus !== 'paid';
+      if (status === 'paid') return order.paymentStatus === 'paid';
+      return order.status === status || order.paymentStatus === status;
+    })
+    .sort((a, b) => new Date(b.updatedAt || b.boughtAt || 0) - new Date(a.updatedAt || a.boughtAt || 0));
+  res.json(allOrders);
+});
+
+app.get('/api/orders/:id', (req, res) => {
+  const detail = getAdminOrderDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'Commande introuvable' });
+  res.json(detail);
 });
 
 app.post('/api/orders', (req, res) => {
@@ -335,14 +359,89 @@ app.post('/api/orders', (req, res) => {
 });
 
 app.put('/api/orders/:id', (req, res) => {
-  const payload = orderPayload(req.body);
+  const detail = getAdminOrderDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'Commande introuvable' });
+
+  if (detail.sourceType === 'initiated_order') {
+    const existing = row('SELECT * FROM initiated_orders WHERE id = ?', [detail.dbId]);
+    run(`
+      UPDATE initiated_orders
+      SET first_name = ?, last_name = ?, email = ?, phone = ?, desired_date = ?, amount = ?,
+        status = ?, payment_status = ?, school_id = ?, formula_id = ?, message = ?, internal_note = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [
+      req.body.customerFirstname ?? req.body.firstName ?? existing.first_name ?? '',
+      req.body.customerLastname ?? req.body.lastName ?? existing.last_name ?? '',
+      req.body.customerEmail ?? req.body.email ?? existing.email ?? '',
+      req.body.customerPhone ?? req.body.phone ?? existing.phone ?? '',
+      req.body.desiredDate ?? req.body.desired_date ?? existing.desired_date ?? '',
+      nullableNumber(req.body.amount ?? existing.amount),
+      req.body.status ?? existing.status,
+      req.body.paymentStatus ?? req.body.payment_status ?? existing.payment_status,
+      nullableNumber(req.body.partnerId ?? req.body.schoolId ?? existing.school_id),
+      nullableNumber(req.body.formulaId ?? existing.formula_id),
+      req.body.message ?? existing.message ?? '',
+      req.body.notes ?? req.body.internalNote ?? existing.internal_note ?? '',
+      detail.dbId
+    ]);
+    recordOrderEvent({ initiatedOrderId: detail.dbId, eventType: 'manual_update', author: req.body.author || 'admin', content: 'Commande initiée modifiée depuis le backoffice.' });
+    return res.json(getAdminOrderDetail(`INIT-${detail.dbId}`));
+  }
+
+  const existing = row('SELECT * FROM orders WHERE id = ?', [detail.dbId]);
+  const merged = {
+    ...existing,
+    ...req.body,
+    orderNumber: req.body.orderNumber || existing.order_number,
+    customerName: req.body.customerName || `${req.body.customerFirstname ?? existing.customer_firstname} ${req.body.customerLastname ?? existing.customer_lastname}`.trim(),
+    customerEmail: req.body.customerEmail ?? existing.customer_email,
+    customerPhone: req.body.customerPhone ?? existing.customer_phone,
+    productType: req.body.productType ?? existing.product_type,
+    partnerId: req.body.partnerId ?? existing.partner_id,
+    stageId: req.body.stageId ?? existing.stage_id,
+    paymentStatus: req.body.paymentStatus ?? existing.payment_status,
+    paymentProvider: req.body.paymentProvider ?? existing.payment_provider,
+    paymentId: req.body.paymentId ?? existing.payment_id,
+    reservationKey: req.body.reservationKey ?? existing.reservation_key
+  };
+  const payload = orderPayload(merged);
   run(`
     UPDATE orders SET order_number = ?, customer_firstname = ?, customer_lastname = ?, customer_email = ?, customer_phone = ?,
       product_type = ?, stage_id = ?, partner_id = ?, city = ?, spot = ?, amount = ?, status = ?,
-      payment_status = ?, payment_provider = ?, payment_id = ?, title = ?, metadata = ?, reservation_key = ?, updated_at = CURRENT_TIMESTAMP
+      payment_status = ?, payment_provider = ?, payment_id = ?, title = ?, metadata = ?, reservation_key = ?,
+      payment_link = COALESCE(?, payment_link), updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `, [...payload, req.params.id]);
-  res.json(serializeOrder(row('SELECT * FROM orders WHERE id = ?', [req.params.id])));
+  `, [...payload, req.body.paymentLink || req.body.payment_link || null, detail.dbId]);
+  recordOrderEvent({ orderId: detail.dbId, eventType: 'manual_update', author: req.body.author || 'admin', content: 'Commande modifiée depuis le backoffice.' });
+  res.json(getAdminOrderDetail(detail.dbId));
+});
+
+app.post('/api/orders/:id/emails', async (req, res) => {
+  const detail = getAdminOrderDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'Commande introuvable' });
+  try {
+    const result = await sendManualOrderEmail(detail, req.body.template);
+    res.json({ ok: true, result, order: getAdminOrderDetail(req.params.id) });
+  } catch (error) {
+    console.error('[admin:orders:email] error', { orderId: req.params.id, template: req.body.template, error: serializeError(error) });
+    res.status(error.status || 500).json({ error: error.message || 'Impossible d’envoyer cet email', details: serializeError(error) });
+  }
+});
+
+app.post('/api/orders/:id/history', (req, res) => {
+  const detail = getAdminOrderDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'Commande introuvable' });
+  const content = String(req.body.content || req.body.note || '').trim();
+  if (!content) return res.status(400).json({ error: 'Note requise' });
+  recordOrderEvent({
+    orderId: detail.sourceType === 'order' ? detail.dbId : null,
+    initiatedOrderId: detail.sourceType === 'initiated_order' ? detail.dbId : null,
+    eventType: req.body.eventType || 'manual_note',
+    author: req.body.author || 'admin',
+    content
+  });
+  res.status(201).json(getAdminOrderHistory(detail));
 });
 
 app.delete('/api/orders/:id', (req, res) => {
@@ -416,10 +515,11 @@ app.post('/api/payments/create-checkout-session', async (req, res) => {
       SET payment_provider = 'stripe',
         stripe_session_id = ?,
         payment_id = ?,
+        payment_link = ?,
         metadata = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `, [checkoutSession.id, checkoutSession.id, JSON.stringify({ ...metadata, stripeCheckoutUrl: checkoutSession.url }), savedOrder.id]);
+    `, [checkoutSession.id, checkoutSession.id, checkoutSession.url, JSON.stringify({ ...metadata, stripeCheckoutUrl: checkoutSession.url }), savedOrder.id]);
 
     console.log('[stripe:create-checkout-session] created', {
       sessionId: checkoutSession.id,
@@ -558,16 +658,20 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       automatic_payment_methods: { enabled: true },
       metadata: paymentMetadata
     });
+    const resumePaymentLink = metadata.resumeToken
+      ? `${frontendUrl}/reservation/reprendre/${encodeURIComponent(metadata.resumeToken)}`
+      : '';
 
     run(`
       UPDATE orders
       SET payment_provider = 'stripe',
         payment_id = ?,
+        payment_link = COALESCE(NULLIF(?, ''), payment_link),
         metadata = ?,
         reservation_key = COALESCE(reservation_key, ?),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `, [paymentIntent.id, JSON.stringify({ ...metadata, ...paymentMetadata, stripePaymentIntent: paymentIntent.id }), reservationKey || null, savedOrder.id]);
+    `, [paymentIntent.id, resumePaymentLink, JSON.stringify({ ...metadata, ...paymentMetadata, stripePaymentIntent: paymentIntent.id }), reservationKey || null, savedOrder.id]);
 
     console.log('[stripe:create-payment-intent] created', {
       orderId: savedOrder.id,
@@ -650,6 +754,8 @@ app.post('/api/payments/confirm-gift-card-payment', async (req, res) => {
     `, payload);
 
     let savedOrder = row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
+    recordOrderEvent({ orderId: savedOrder.id, eventType: 'order_created', content: 'Commande créée via paiement intégral par carte cadeau.', metadata: { paymentProvider: 'gift_card' } });
+    recordOrderEvent({ orderId: savedOrder.id, eventType: 'payment_succeeded', content: 'Paiement validé par carte cadeau.' });
     Object.assign(orderMetadata, applyOrderGiftCardIfNeeded(savedOrder, orderMetadata));
     const voucherToken = ensureOrderVoucherToken(savedOrder);
     run(`
@@ -1965,6 +2071,11 @@ function inferFormulaCategory(body) {
 
 function orderPayload(body) {
   const name = splitName(body.customerName || `${body.customer_firstname || ''} ${body.customer_lastname || ''}`);
+  const metadataValue = typeof body.metadata === 'string'
+    ? body.metadata
+    : body.metadata
+      ? JSON.stringify(body.metadata)
+      : null;
   return [
     body.order_number || body.orderNumber || `SK-${Date.now().toString().slice(-6)}`,
     body.customer_firstname || name.firstname,
@@ -1982,9 +2093,42 @@ function orderPayload(body) {
     body.payment_provider || body.paymentProvider || '',
     body.payment_id || body.paymentId || '',
     body.title || body.product || '',
-    body.metadata ? JSON.stringify(body.metadata) : null,
+    metadataValue,
     body.reservation_key || body.reservationKey || null
   ];
+}
+
+function recordOrderEvent({ orderId = null, initiatedOrderId = null, eventType, author = 'system', content = '', metadata = null }) {
+  if (!eventType || (!orderId && !initiatedOrderId)) return null;
+  const exists = row(`
+    SELECT id FROM order_events
+    WHERE event_type = ?
+      AND COALESCE(order_id, 0) = COALESCE(?, 0)
+      AND COALESCE(initiated_order_id, 0) = COALESCE(?, 0)
+      AND COALESCE(content, '') = COALESCE(?, '')
+    LIMIT 1
+  `, [eventType, orderId, initiatedOrderId, content]);
+  if (exists && ['order_created', 'payment_succeeded'].includes(eventType)) return exists;
+  const result = run(`
+    INSERT INTO order_events (order_id, initiated_order_id, event_type, author, content, metadata, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `, [
+    orderId || null,
+    initiatedOrderId || null,
+    eventType,
+    author || 'system',
+    content || '',
+    metadata ? JSON.stringify(metadata) : null
+  ]);
+  return row('SELECT * FROM order_events WHERE id = ?', [result.lastInsertRowid]);
+}
+
+function getOrderPaymentLink(order) {
+  const metadata = parseMetadata(order.metadata);
+  if (order.payment_link) return order.payment_link;
+  if (metadata.stripeCheckoutUrl) return metadata.stripeCheckoutUrl;
+  if (metadata.resumeToken) return `${frontendUrl}/reservation/reprendre/${encodeURIComponent(metadata.resumeToken)}`;
+  return '';
 }
 
 function createPendingStripeOrder(body) {
@@ -2001,7 +2145,9 @@ function createPendingStripeOrder(body) {
     INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata, reservation_key)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, payload);
-  return row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
+  const order = row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
+  recordOrderEvent({ orderId: order.id, eventType: 'order_created', content: 'Commande créée en statut pending.', metadata: { paymentProvider: 'stripe' } });
+  return order;
 }
 
 function stringifyMetadata(metadata = {}) {
@@ -2349,6 +2495,12 @@ function markStripeCheckoutSessionPaid(session) {
   if (orderMetadata.resumeToken) {
     markInitiatedPaid(orderMetadata.resumeToken, order.amount);
   }
+  recordOrderEvent({
+    orderId: order.id,
+    eventType: 'payment_succeeded',
+    content: 'Paiement Stripe Checkout confirmé.',
+    metadata: { sessionId: session.id, paymentIntent: session.payment_intent || '' }
+  });
 
   console.log('Stripe checkout order paid', {
     sessionId: session.id,
@@ -2401,6 +2553,12 @@ function markStripePaymentIntentPaid(paymentIntent) {
   if (orderMetadata.resumeToken) {
     markInitiatedPaid(orderMetadata.resumeToken, order.amount);
   }
+  recordOrderEvent({
+    orderId: order.id,
+    eventType: 'payment_succeeded',
+    content: 'Paiement Stripe Elements confirmé.',
+    metadata: { paymentIntentId: paymentIntent.id }
+  });
 
   console.log('Stripe payment intent order paid', {
     paymentIntentId: paymentIntent.id,
@@ -2472,8 +2630,8 @@ async function sendStripePaymentEmails(order, session) {
   return emailResults;
 }
 
-async function sendCustomerPaymentEmail(order, emailData) {
-  if (order.customer_email_sent_at) {
+async function sendCustomerPaymentEmail(order, emailData, options = {}) {
+  if (order.customer_email_sent_at && !options.force) {
     console.log('[email:client] skipped already sent', { orderId: order.id, sentAt: order.customer_email_sent_at });
     return { status: 'skipped', reason: 'already_sent', sentAt: order.customer_email_sent_at };
   }
@@ -2531,6 +2689,7 @@ async function sendCustomerPaymentEmail(order, emailData) {
       throw resultClient.error;
     }
     run('UPDATE orders SET customer_email_sent_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
+    recordOrderEvent({ orderId: order.id, eventType: 'email_sent', content: `Email client envoyé à ${emailData.customerEmail}.`, metadata: { to: emailData.customerEmail, subject } });
     console.log('[email:client] sent', { orderId: order.id, to: emailData.customerEmail });
     return { status: 'sent', to: emailData.customerEmail, result: resultClient };
   } catch (error) {
@@ -2572,6 +2731,7 @@ async function sendAdminPaymentEmail(order, emailData) {
       throw resultAdmin.error;
     }
     run('UPDATE orders SET admin_email_sent_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
+    recordOrderEvent({ orderId: order.id, eventType: 'email_sent', content: `Email admin envoyé à ${adminEmail}.`, metadata: { to: adminEmail, subject: 'Nouvelle réservation payée sur Spotykite' } });
     console.log('[email:admin] sent', { orderId: order.id, to: adminEmail });
     return { status: 'sent', to: adminEmail, result: resultAdmin };
   } catch (error) {
@@ -3108,6 +3268,7 @@ function serializeAccommodation(item) {
 
 function serializeOrder(order) {
   const partnerPayoutStatus = order.partner_payout_status || 'not_payable';
+  const metadata = parseMetadata(order.metadata);
   const payoutLabel = partnerPayoutStatus === 'paid'
     ? 'Payée à l’école'
     : partnerPayoutStatus === 'payable'
@@ -3115,6 +3276,7 @@ function serializeOrder(order) {
       : 'Non payable';
   return {
     ...order,
+    sourceType: 'order',
     id: order.order_number || order.id,
     dbId: order.id,
     orderNumber: order.order_number,
@@ -3127,20 +3289,215 @@ function serializeOrder(order) {
     partnerId: order.partner_id,
     amount: order.amount,
     boughtAt: order.created_at,
-    desiredDate: '',
+    updatedAt: order.updated_at,
+    desiredDate: metadata.desiredDate || metadata.selectedDate || metadata.desired_date || '',
     paymentMethod: order.payment_provider || order.payment_status,
     paymentStatus: order.payment_status,
     paymentStatusLabel: order.payment_status === 'paid' ? 'Payée' : 'En attente',
     isAbandoned: order.payment_provider === 'stripe' && order.payment_status === 'pending',
+    paymentLink: getOrderPaymentLink(order),
     consumptionStatusLabel: order.consumed_at ? 'Consommée' : 'Non consommée',
     consumedAt: order.consumed_at,
     consumedBy: order.consumed_by,
     consumptionMethod: order.consumption_method,
     voucherToken: order.voucher_token,
+    voucherUrl: order.voucher_token ? voucherUrl(order.voucher_token) : '',
+    metadata,
     partnerPayoutStatus,
     partnerPayoutLabel: payoutLabel,
     payableToPartner: order.payment_status === 'paid' && Boolean(order.consumed_at) && partnerPayoutStatus !== 'paid'
   };
+}
+
+function serializeInitiatedAsOrder(item) {
+  const name = `${item.first_name || ''} ${item.last_name || ''}`.trim();
+  return {
+    ...item,
+    sourceType: 'initiated_order',
+    id: `INIT-${item.id}`,
+    dbId: item.id,
+    orderNumber: `INIT-${item.id}`,
+    customerName: name,
+    customerEmail: item.email || '',
+    customerPhone: item.phone || '',
+    product: item.formulaName || item.type || 'Réservation initiée',
+    offerType: item.type || 'booking',
+    city: item.city || '',
+    spot: item.spot || '',
+    partner: item.schoolName || '',
+    partnerId: item.school_id,
+    formulaId: item.formula_id,
+    amount: item.amount || 0,
+    status: item.status || 'initiated',
+    boughtAt: item.created_at,
+    updatedAt: item.updated_at,
+    desiredDate: item.desired_date || '',
+    paymentMethod: 'lien de reprise',
+    paymentStatus: item.payment_status || 'unpaid',
+    paymentStatusLabel: item.payment_status === 'paid' ? 'Payée' : 'Initiée',
+    isAbandoned: false,
+    paymentLink: item.payment_link || absoluteFrontendPath(item.resume_url),
+    resumeUrl: item.resume_url,
+    resumeToken: item.resume_token,
+    consumptionStatusLabel: 'Non consommée',
+    partnerPayoutStatus: 'not_payable',
+    partnerPayoutLabel: 'Non payable',
+    notes: item.internal_note || item.message || ''
+  };
+}
+
+function absoluteFrontendPath(pathOrUrl = '') {
+  if (!pathOrUrl) return '';
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  return `${frontendUrl}${pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`}`;
+}
+
+function getAdminOrderDetail(id) {
+  const rawId = String(id || '').trim();
+  if (rawId.toUpperCase().startsWith('INIT-')) {
+    const initiatedId = rawId.replace(/^INIT-/i, '');
+    const item = row(`
+      SELECT initiated_orders.*, schools.name AS schoolName, offers.title AS formulaName
+      FROM initiated_orders
+      LEFT JOIN schools ON schools.id = initiated_orders.school_id
+      LEFT JOIN offers ON offers.id = initiated_orders.formula_id
+      WHERE initiated_orders.id = ?
+    `, [initiatedId]);
+    if (!item) return null;
+    const order = serializeInitiatedAsOrder(item);
+    return { ...order, history: getAdminOrderHistory(order) };
+  }
+
+  const item = row(`
+    SELECT orders.*, stages.title AS stage_title, partners.name AS partner_name
+    FROM orders
+    LEFT JOIN stages ON stages.id = orders.stage_id
+    LEFT JOIN partners ON partners.id = orders.partner_id
+    WHERE orders.id = ? OR orders.order_number = ?
+  `, [rawId, rawId]);
+  if (!item) return null;
+  const order = serializeOrder(item);
+  return { ...order, history: getAdminOrderHistory(order) };
+}
+
+function getAdminOrderHistory(order) {
+  const params = order.sourceType === 'initiated_order'
+    ? [null, order.dbId]
+    : [order.dbId, null];
+  const stored = rows(`
+    SELECT *
+    FROM order_events
+    WHERE (order_id = ? AND ? IS NULL)
+       OR (initiated_order_id = ? AND ? IS NULL)
+    ORDER BY created_at DESC
+  `, order.sourceType === 'initiated_order'
+    ? [null, null, order.dbId, null]
+    : [order.dbId, null, null, null]);
+  const virtual = [];
+  if (order.boughtAt) {
+    virtual.push({
+      id: `created-${order.sourceType}-${order.dbId}`,
+      event_type: 'order_created',
+      eventType: 'order_created',
+      author: 'system',
+      content: order.sourceType === 'initiated_order' ? 'Commande initiée créée.' : 'Commande créée.',
+      created_at: order.boughtAt,
+      createdAt: order.boughtAt,
+      virtual: true
+    });
+  }
+  if (order.paymentStatus === 'paid') {
+    virtual.push({
+      id: `paid-${order.sourceType}-${order.dbId}`,
+      event_type: 'payment_succeeded',
+      eventType: 'payment_succeeded',
+      author: 'system',
+      content: 'Paiement confirmé.',
+      created_at: order.paid_at || order.paidAt || order.updatedAt || order.boughtAt,
+      createdAt: order.paid_at || order.paidAt || order.updatedAt || order.boughtAt,
+      virtual: true
+    });
+  }
+  const existingKeys = new Set(stored.map((event) => `${event.event_type}-${event.content}`));
+  return [
+    ...stored.map((event) => ({
+      ...event,
+      eventType: event.event_type,
+      createdAt: event.created_at,
+      metadata: parseMetadata(event.metadata)
+    })),
+    ...virtual.filter((event) => !existingKeys.has(`${event.event_type}-${event.content}`))
+  ].sort((a, b) => new Date(b.createdAt || b.created_at || 0) - new Date(a.createdAt || a.created_at || 0));
+}
+
+async function sendManualOrderEmail(order, template) {
+  const type = String(template || '').trim();
+  if (!type) throw Object.assign(new Error('Template email requis'), { status: 400 });
+
+  if (type === 'A1') {
+    if (order.paymentStatus === 'paid') throw Object.assign(new Error('La commande est déjà payée.'), { status: 409 });
+    if (!order.customerEmail) throw Object.assign(new Error('Email client manquant.'), { status: 400 });
+    if (!order.paymentLink) throw Object.assign(new Error('Lien de paiement ou reprise manquant.'), { status: 400 });
+    const result = await getResendClient().emails.send({
+      from: mailFrom(),
+      to: order.customerEmail,
+      subject: 'Finaliser votre commande Spotykite',
+      html: manualPaymentReminderHtml(order)
+    });
+    if (result?.error) throw result.error;
+    if (order.sourceType === 'initiated_order') {
+      run('UPDATE initiated_orders SET email_sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [order.dbId]);
+      recordOrderEvent({ initiatedOrderId: order.dbId, eventType: 'email_sent', author: 'admin', content: `A1 - Relance commande initiée envoyée à ${order.customerEmail}.`, metadata: { to: order.customerEmail, template: type, result } });
+    } else {
+      recordOrderEvent({ orderId: order.dbId, eventType: 'email_sent', author: 'admin', content: `A1 - Relance commande initiée envoyée à ${order.customerEmail}.`, metadata: { to: order.customerEmail, template: type, result } });
+    }
+    return result;
+  }
+
+  if (!['A2', 'A3'].includes(type)) throw Object.assign(new Error('Template email inconnu.'), { status: 400 });
+  if (order.sourceType !== 'order') throw Object.assign(new Error('Cette action nécessite une commande finalisée.'), { status: 409 });
+  if (order.paymentStatus !== 'paid') throw Object.assign(new Error('La commande doit être payée pour renvoyer un bon.'), { status: 409 });
+  if (type === 'A3' && order.offerType !== 'gift_card') throw Object.assign(new Error('Cette commande n’est pas une carte cadeau.'), { status: 409 });
+  if (type === 'A2' && order.offerType === 'gift_card') throw Object.assign(new Error('Utilisez A3 pour renvoyer une carte cadeau.'), { status: 409 });
+
+  const dbOrder = row('SELECT * FROM orders WHERE id = ?', [order.dbId]);
+  const mockPayment = {
+    id: dbOrder.payment_id || `manual_${Date.now()}`,
+    amount_received: Math.round(Number(dbOrder.amount || 0) * 100),
+    receipt_email: dbOrder.customer_email,
+    metadata: {
+      ...parseMetadata(dbOrder.metadata),
+      customerEmail: dbOrder.customer_email,
+      orderId: String(dbOrder.id),
+      orderNumber: dbOrder.order_number
+    }
+  };
+  const emailData = buildStripePaymentEmailData(dbOrder, mockPayment);
+  const result = await sendCustomerPaymentEmail(dbOrder, emailData, { force: true });
+  recordOrderEvent({ orderId: order.dbId, eventType: 'email_sent', author: 'admin', content: `${type} - Email renvoyé manuellement à ${emailData.customerEmail}.`, metadata: { to: emailData.customerEmail, template: type, result } });
+  return result;
+}
+
+function manualPaymentReminderHtml(order) {
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.55;color:#12385C;max-width:680px">
+      <h1 style="font-size:24px;margin:0 0 12px">Finaliser votre commande Spotykite</h1>
+      <p>Bonjour${order.customerName ? ` ${escapeHtml(order.customerName)}` : ''},</p>
+      <p>Votre commande Spotykite a bien été initiée, mais le paiement n’est pas encore finalisé.</p>
+      <p>Vous pouvez reprendre votre réservation et finaliser votre commande depuis le lien ci-dessous.</p>
+      <p style="margin:24px 0">
+        <a href="${escapeHtml(order.paymentLink)}" style="display:inline-block;background:#2DD4BF;color:#12385C;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:12px">Finaliser ma commande</a>
+      </p>
+      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;margin-top:18px">
+        ${emailRows([
+          ['Commande', order.orderNumber],
+          ['Produit', order.product],
+          ['Montant', new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(order.amount || 0)]
+        ])}
+      </table>
+      <p style="margin-top:24px">À très vite sur le spot,<br>L’équipe Spotykite</p>
+    </div>
+  `;
 }
 
 function serializeGiftCard(card) {
@@ -3215,6 +3572,9 @@ function upsertInitiatedOrder(body) {
     LEFT JOIN offers ON offers.id = initiated_orders.formula_id
     WHERE initiated_orders.resume_token = ?
   `, [payload.token]);
+  if (!existing) {
+    recordOrderEvent({ initiatedOrderId: item.id, eventType: 'order_created', content: 'Commande initiée créée.', metadata: { resumeToken: item.resume_token } });
+  }
   return serializeInitiatedOrder(item);
 }
 
@@ -3288,6 +3648,10 @@ function markInitiatedPaid(token, amount) {
     SET status = 'paid', payment_status = 'paid', amount = COALESCE(?, amount), last_step = 'payment', updated_at = CURRENT_TIMESTAMP
     WHERE resume_token = ?
   `, [nullableNumber(amount), token]);
+  const item = row('SELECT * FROM initiated_orders WHERE resume_token = ?', [token]);
+  if (item) {
+    recordOrderEvent({ initiatedOrderId: item.id, eventType: 'payment_succeeded', content: 'Commande initiée marquée payée après paiement.' });
+  }
 }
 
 function futureDate(days) {

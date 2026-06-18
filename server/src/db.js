@@ -320,6 +320,19 @@ export function migrate() {
       FOREIGN KEY (formula_id) REFERENCES offers(id) ON DELETE SET NULL,
       FOREIGN KEY (order_id) REFERENCES initiated_orders(id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS order_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER,
+      initiated_order_id INTEGER,
+      event_type TEXT NOT NULL,
+      author TEXT,
+      content TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (initiated_order_id) REFERENCES initiated_orders(id) ON DELETE CASCADE
+    );
   `);
 
   addColumnIfMissing('bookings', 'giftCardId', 'INTEGER');
@@ -342,6 +355,8 @@ export function migrate() {
   addColumnIfMissing('orders', 'voucher_token', 'TEXT');
   addColumnIfMissing('orders', 'partner_payout_status', "TEXT NOT NULL DEFAULT 'not_payable'");
   addColumnIfMissing('orders', 'reservation_key', 'TEXT');
+  addColumnIfMissing('orders', 'payment_link', 'TEXT');
+  addColumnIfMissing('initiated_orders', 'payment_link', 'TEXT');
   addColumnIfMissing('schools', 'slug', 'TEXT');
   addColumnIfMissing('schools', 'department', 'TEXT');
   addColumnIfMissing('schools', 'address', 'TEXT');
@@ -422,6 +437,8 @@ export function migrate() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_pending_reservation_key
       ON orders(reservation_key)
       WHERE reservation_key IS NOT NULL AND payment_status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_order_events_order_id ON order_events(order_id);
+    CREATE INDEX IF NOT EXISTS idx_order_events_initiated_order_id ON order_events(initiated_order_id);
 
     CREATE TABLE IF NOT EXISTS accommodations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

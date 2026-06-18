@@ -140,7 +140,6 @@ function newSchoolPartnerForm() {
 const tabs = [
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['contents', 'Contenus du site', FileText],
-  ['prospects', 'Prospects & commandes', Users],
   ['orders', 'Commandes', ShoppingBag],
   ['partners', 'Écoles', School],
   ['create-partner', 'Créer une école', Plus],
@@ -156,7 +155,6 @@ export default function Admin() {
   const [code, setCode] = useState('');
   const [tab, setTab] = useState('dashboard');
   const [orders, setOrders] = useState(initialOrders);
-  const [prospects, setProspects] = useState([]);
   const [partners, setPartners] = useState(initialPartners);
   const [adminGiftCards, setAdminGiftCards] = useState(initialGiftCards);
   const [formulas, setFormulas] = useState([]);
@@ -198,9 +196,8 @@ export default function Admin() {
   }, [unlocked]);
 
   async function reloadAdminData() {
-    const [nextOrders, nextProspects, nextSchools, nextFormulas, nextAccommodations, nextContentBlocks, nextAvailabilities, nextSeasons, nextSpecialOffers, nextGiftCards] = await Promise.all([
+    const [nextOrders, nextSchools, nextFormulas, nextAccommodations, nextContentBlocks, nextAvailabilities, nextSeasons, nextSpecialOffers, nextGiftCards] = await Promise.all([
       api.orders(),
-      api.prospects(),
       api.schools({ include: 'all' }),
       api.formulas(),
       api.accommodations(),
@@ -211,7 +208,6 @@ export default function Admin() {
       api.giftCards()
     ]);
     setOrders(nextOrders.map(normalizeAdminOrder));
-    setProspects(nextProspects);
     setPartners(nextSchools.map(normalizeAdminPartner));
     setFormulas(nextFormulas);
     setAccommodations(nextAccommodations);
@@ -391,10 +387,9 @@ export default function Admin() {
           {notice && <AdminNotice notice={notice} onClose={() => setNotice(null)} />}
           {tab === 'dashboard' && <Dashboard stats={stats} orders={orders} partners={partners} />}
           {tab === 'contents' && <ContentsPage blocks={contentBlocks} onSaved={reloadAdminData} onNotice={showNotice} />}
-          {tab === 'prospects' && <ProspectsPage prospects={prospects} onReload={reloadAdminData} onNotice={showNotice} />}
           {tab === 'orders' && (
             selectedOrder
-              ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} />
+              ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} onSaved={reloadAdminData} onNotice={showNotice} />
               : <OrdersPage orders={orders} partners={partners} onSelect={setSelectedOrder} onConsumed={reloadAdminData} onNotice={showNotice} />
           )}
           {tab === 'partners' && (
@@ -457,7 +452,6 @@ function AdminHeader({ tab, apiStatus }) {
   const labels = {
     dashboard: 'Dashboard admin',
     contents: 'Contenus du site',
-    prospects: 'Prospects & commandes',
     orders: 'Commandes',
     partners: 'Écoles',
     'create-partner': 'Créer une école',
@@ -680,16 +674,14 @@ function OrdersPage({ orders, partners = [], onSelect, onConsumed, onNotice }) {
   });
   const [page, setPage] = useState(1);
   const pageSize = 8;
-  const realOrders = useMemo(() => orders.filter((order) => !order.isAbandoned), [orders]);
-  const abandonedOrders = useMemo(() => orders.filter((order) => order.isAbandoned), [orders]);
 
   const filteredOrders = useMemo(() => {
     const now = new Date('2026-06-03');
-    return realOrders.filter((order) => {
+    return orders.filter((order) => {
       const query = normalize(filters.search);
       const haystack = normalize([order.customerName, order.customerEmail, order.id, order.partner, order.city, order.spot].join(' '));
-      const boughtAt = new Date(order.boughtAt);
-      const normalizedStatus = order.status === 'payé' ? 'payée' : order.status;
+      const boughtAt = new Date(order.boughtAt || order.updatedAt);
+      const normalizedStatus = order.paymentStatus === 'paid' ? 'Payées' : 'Initiées';
       const minAmount = filters.minAmount ? Number(filters.minAmount) : null;
       const maxAmount = filters.maxAmount ? Number(filters.maxAmount) : null;
 
@@ -703,11 +695,11 @@ function OrdersPage({ orders, partners = [], onSelect, onConsumed, onNotice }) {
       if (!matchesDateRange(boughtAt, filters.dateRange, filters.dateFrom, filters.dateTo, now)) return false;
       return true;
     });
-  }, [realOrders, filters]);
+  }, [orders, filters]);
 
   const paginatedOrders = paginate(filteredOrders, page, pageSize);
-  const partnerOptions = unique(realOrders.map((order) => order.partner));
-  const cities = unique(realOrders.map((order) => `${order.city} / ${order.spot}`));
+  const partnerOptions = unique(orders.map((order) => order.partner));
+  const cities = unique(orders.map((order) => `${order.city} / ${order.spot}`));
 
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
@@ -726,12 +718,12 @@ function OrdersPage({ orders, partners = [], onSelect, onConsumed, onNotice }) {
         <FilterBar
           title="Filtres commandes"
           count={filteredOrders.length}
-          total={realOrders.length}
+          total={orders.length}
           onReset={resetFilters}
         >
           <div className="grid gap-3 lg:grid-cols-[1.3fr_repeat(4,1fr)]">
             <SearchField value={filters.search} onChange={(value) => updateFilter('search', value)} placeholder="Nom, email, commande, école, ville..." />
-            <SelectFilter value={filters.status} onChange={(value) => updateFilter('status', value)} options={['payée', 'consumed', 'en attente', 'annulée', 'remboursée']} placeholder="Statut" />
+            <SelectFilter value={filters.status} onChange={(value) => updateFilter('status', value)} options={['Payées', 'Initiées']} placeholder="Toutes" />
             <SelectFilter value={filters.dateRange} onChange={(value) => updateFilter('dateRange', value)} options={['aujourd’hui', '7 derniers jours', '30 derniers jours', 'période personnalisée']} placeholder="Date" />
             <SelectFilter value={filters.partner} onChange={(value) => updateFilter('partner', value)} options={partnerOptions} placeholder="École" />
             <SelectFilter value={filters.offerType} onChange={(value) => updateFilter('offerType', value)} options={['stage', 'séance', 'carte cadeau']} placeholder="Type d’offre" />
@@ -747,12 +739,6 @@ function OrdersPage({ orders, partners = [], onSelect, onConsumed, onNotice }) {
         <OrdersTable rows={paginatedOrders} onSelect={onSelect} />
         <Pagination page={page} pageSize={pageSize} total={filteredOrders.length} onPageChange={setPage} />
       </Panel>
-
-      {abandonedOrders.length > 0 && (
-        <Panel title="Commandes abandonnées">
-          <OrdersTable rows={abandonedOrders.slice(0, 10)} onSelect={onSelect} compact />
-        </Panel>
-      )}
     </div>
   );
 }
@@ -829,11 +815,11 @@ function OrdersTable({ rows, onSelect, compact = false }) {
               <td className="px-4 py-4"><StatusBadge value={order.consumptionStatusLabel} /></td>
               <td className="px-4 py-4"><StatusBadge value={order.partnerPayoutLabel} /></td>
               <td className="px-4 py-4">{formatDate(order.boughtAt)}</td>
-              <td className="px-4 py-4">{order.desiredDate ? formatDate(order.desiredDate) : '-'}</td>
+              <td className="px-4 py-4">{formatDate(order.desiredDate)}</td>
               <td className="px-4 py-4">
                 {!compact && (
                   <button onClick={() => onSelect(order)} className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 font-black text-ocean hover:border-ocean">
-                    <Eye size={16} /> Voir détail
+                    <Eye size={16} /> Ouvrir
                   </button>
                 )}
               </td>
@@ -845,33 +831,180 @@ function OrdersTable({ rows, onSelect, compact = false }) {
   );
 }
 
-function OrderDetail({ order, onBack }) {
+function OrderDetail({ order, onBack, onSaved, onNotice }) {
+  const [detail, setDetail] = useState(order);
+  const [form, setForm] = useState(() => orderDetailForm(order));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [emailLoading, setEmailLoading] = useState('');
+  const [note, setNote] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.order(order.id)
+      .then((data) => {
+        if (!alive) return;
+        const normalized = normalizeAdminOrder(data);
+        const merged = { ...normalized, history: data.history || [], metadata: data.metadata || {} };
+        setDetail(merged);
+        setForm(orderDetailForm(merged));
+      })
+      .catch((error) => onNotice?.('error', error.message || 'Impossible de charger la commande.'))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [order.id]);
+
+  function update(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const saved = await api.updateOrder(detail.id, form);
+      const normalized = normalizeAdminOrder(saved);
+      setDetail({ ...normalized, history: saved.history || [], metadata: saved.metadata || {} });
+      setForm(orderDetailForm({ ...normalized, history: saved.history || [], metadata: saved.metadata || {} }));
+      await onSaved?.();
+      onNotice?.('success', 'Commande mise à jour.');
+    } catch (error) {
+      onNotice?.('error', error.message || 'Impossible de mettre à jour la commande.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function sendEmail(template) {
+    setEmailLoading(template);
+    try {
+      const result = await api.sendOrderEmail(detail.id, { template });
+      if (result.order) {
+        const normalized = normalizeAdminOrder(result.order);
+        setDetail({ ...normalized, history: result.order.history || [], metadata: result.order.metadata || {} });
+      }
+      await onSaved?.();
+      onNotice?.('success', 'Email envoyé.');
+    } catch (error) {
+      onNotice?.('error', error.message || 'Impossible d’envoyer cet email.');
+    } finally {
+      setEmailLoading('');
+    }
+  }
+
+  async function addNote(event) {
+    event.preventDefault();
+    if (!note.trim()) return;
+    try {
+      const history = await api.addOrderHistory(detail.id, { content: note.trim(), eventType: 'manual_note', author: 'admin' });
+      setDetail((current) => ({ ...current, history }));
+      setNote('');
+      onNotice?.('success', 'Suivi ajouté.');
+    } catch (error) {
+      onNotice?.('error', error.message || 'Impossible d’ajouter ce suivi.');
+    }
+  }
+
+  function copyPaymentLink() {
+    if (!detail.paymentLink) return;
+    navigator.clipboard?.writeText(detail.paymentLink);
+    onNotice?.('success', 'Lien copié.');
+  }
+
   return (
     <div className="grid gap-6">
       <button onClick={onBack} className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border bg-white px-4 py-3 font-black text-ocean">
         <ChevronLeft size={18} /> Retour aux commandes
       </button>
-      <Panel title={`Commande ${order.id}`}>
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <Detail label="Client" value={order.customerName} />
-          <Detail label="Email" value={order.customerEmail} />
-          <Detail label="Téléphone" value={order.customerPhone} />
-          <Detail label="Produit acheté" value={order.product} />
-          <Detail label="Ville / spot" value={`${order.city} / ${order.spot}`} />
-          <Detail label="École associée" value={order.partner} />
-          <Detail label="Montant payé" value={formatCurrency(order.amount)} />
-          <Detail label="Statut" value={order.status} />
-          <Detail label="Bon de réservation" value={order.consumptionStatusLabel} />
-          <Detail label="Consommé le" value={order.consumedAt ? formatDate(order.consumedAt) : '-'} />
-          <Detail label="Méthode de validation" value={order.consumptionMethod || '-'} />
-          <Detail label="Règlement école" value={order.partnerPayoutLabel} />
-          <Detail label="Date d'achat" value={formatDate(order.boughtAt)} />
-          <Detail label="Date souhaitée" value={order.desiredDate ? formatDate(order.desiredDate) : '-'} />
-          <Detail label="Paiement" value={order.paymentMethod} />
-          <Detail label="Notes" value={order.notes} />
+      <Panel title={`Commande ${detail.orderNumber || detail.id}`}>
+        {loading ? (
+          <p className="font-bold text-muted">Chargement...</p>
+        ) : (
+          <form onSubmit={save} className="grid gap-6">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <AdminInput label="Prénom client" value={form.customerFirstname} onChange={(value) => update('customerFirstname', value)} />
+              <AdminInput label="Nom client" value={form.customerLastname} onChange={(value) => update('customerLastname', value)} />
+              <AdminInput label="Email client" type="email" value={form.customerEmail} onChange={(value) => update('customerEmail', value)} />
+              <AdminInput label="Téléphone client" value={form.customerPhone} onChange={(value) => update('customerPhone', value)} />
+              <AdminInput label="Produit" value={form.productType} onChange={(value) => update('productType', value)} />
+              <AdminInput label="Montant" type="number" value={form.amount} onChange={(value) => update('amount', value)} />
+              <AdminInput label="Ville" value={form.city} onChange={(value) => update('city', value)} />
+              <AdminInput label="Spot" value={form.spot} onChange={(value) => update('spot', value)} />
+              <AdminInput label="Date souhaitée" type="date" value={form.desiredDate} onChange={(value) => update('desiredDate', value)} />
+              <label className="grid gap-2 text-sm font-bold text-muted">
+                Statut commande
+                <select className="field" value={form.status} onChange={(event) => update('status', event.target.value)}>
+                  {['initiated', 'pending', 'en attente', 'payé', 'annulée', 'remboursée'].map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-2 text-sm font-bold text-muted">
+                Paiement
+                <select className="field" value={form.paymentStatus} onChange={(event) => update('paymentStatus', event.target.value)}>
+                  {['unpaid', 'pending', 'paid', 'cancelled', 'refunded'].map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
+              <AdminInput label="École / partenaire ID" value={form.partnerId} onChange={(value) => update('partnerId', value)} />
+              <AdminTextarea label="Notes internes" value={form.notes} onChange={(value) => update('notes', value)} className="md:col-span-2 xl:col-span-3" />
+            </div>
+
+            <div className="grid gap-4 rounded-3xl border border-border bg-sky/50 p-4 md:grid-cols-2 xl:grid-cols-4">
+              <Detail label="Statut affiché" value={detail.paymentStatusLabel || detail.status} />
+              <Detail label="Bon lié" value={detail.voucherUrl ? 'Bon disponible' : detail.offerType === 'gift_card' ? 'Carte cadeau' : '-'} />
+              <Detail label="Consommation" value={detail.consumptionStatusLabel || '-'} />
+              <Detail label="Règlement école" value={detail.partnerPayoutLabel || '-'} />
+              {detail.voucherUrl && <a className="btn-secondary justify-center" href={detail.voucherUrl} target="_blank" rel="noreferrer">Ouvrir le bon</a>}
+              {detail.paymentLink && (
+                <button type="button" className="btn-secondary justify-center" onClick={copyPaymentLink}>Copier le lien de paiement</button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <button type="submit" className="btn-primary disabled:opacity-60" disabled={saving}>
+                <Save size={16} /> {saving ? 'Enregistrement...' : 'Enregistrer'}
+              </button>
+            </div>
+          </form>
+        )}
+      </Panel>
+
+      <Panel title="Emails manuels">
+        <div className="grid gap-3 md:grid-cols-3">
+          <ManualEmailButton code="A1" title="Relance commande initiée" disabled={detail.paymentStatus === 'paid'} loading={emailLoading} onClick={sendEmail} />
+          <ManualEmailButton code="A2" title="Renvoi bon de réservation" disabled={detail.paymentStatus !== 'paid' || detail.offerType === 'gift_card'} loading={emailLoading} onClick={sendEmail} />
+          <ManualEmailButton code="A3" title="Renvoi carte cadeau" disabled={detail.paymentStatus !== 'paid' || detail.offerType !== 'gift_card'} loading={emailLoading} onClick={sendEmail} />
+        </div>
+      </Panel>
+
+      <Panel title="Historique / suivi">
+        <form onSubmit={addNote} className="mb-5 grid gap-3 md:grid-cols-[1fr_auto]">
+          <input className="field" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ajouter un suivi : client rappelé, à relancer demain..." />
+          <button type="submit" className="btn-primary justify-center">Ajouter</button>
+        </form>
+        <div className="grid gap-3">
+          {(detail.history || []).map((event) => (
+            <div key={event.id} className="rounded-2xl border border-border bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-black uppercase text-ocean">{eventLabel(event.eventType || event.event_type)}</span>
+                <span className="text-xs font-bold text-muted">{formatDate(event.createdAt || event.created_at)} · {event.author || 'system'}</span>
+              </div>
+              <p className="mt-2 text-sm font-bold text-text">{event.content}</p>
+            </div>
+          ))}
         </div>
       </Panel>
     </div>
+  );
+}
+
+function ManualEmailButton({ code, title, disabled, loading, onClick }) {
+  return (
+    <button type="button" className="rounded-2xl border border-border bg-white p-4 text-left transition hover:border-ocean disabled:cursor-not-allowed disabled:opacity-50" disabled={disabled || Boolean(loading)} onClick={() => onClick(code)}>
+      <span className="block text-xs font-black uppercase text-turquoise">{code}</span>
+      <span className="mt-1 block font-black text-ocean">{loading === code ? 'Envoi...' : title}</span>
+    </button>
   );
 }
 
@@ -1914,6 +2047,44 @@ function matchesDateRange(date, range, from, to, now) {
   return true;
 }
 
+function orderDetailForm(order) {
+  const name = splitDisplayName(order.customerName || '');
+  return {
+    customerFirstname: order.customerFirstname || order.customer_firstname || name.firstname,
+    customerLastname: order.customerLastname || order.customer_lastname || name.lastname,
+    customerEmail: order.customerEmail || '',
+    customerPhone: order.customerPhone || '',
+    productType: order.offerType || order.product || '',
+    amount: order.amount || 0,
+    city: order.city || '',
+    spot: order.spot || '',
+    desiredDate: String(order.desiredDate || '').slice(0, 10),
+    status: order.status || 'initiated',
+    paymentStatus: order.paymentStatus || 'unpaid',
+    partnerId: order.partnerId || '',
+    formulaId: order.formulaId || '',
+    notes: order.notes || ''
+  };
+}
+
+function splitDisplayName(value) {
+  const parts = String(value || '').trim().split(/\s+/).filter(Boolean);
+  return {
+    firstname: parts.shift() || '',
+    lastname: parts.join(' ')
+  };
+}
+
+function eventLabel(type) {
+  return {
+    order_created: 'Création',
+    payment_succeeded: 'Paiement réussi',
+    email_sent: 'Email envoyé',
+    manual_update: 'Modification manuelle',
+    manual_note: 'Note'
+  }[type] || type || 'Suivi';
+}
+
 function normalizePartnerStatus(status) {
   if (status === 'actif') return 'actif';
   if (status === 'suspendu') return 'inactif';
@@ -1922,7 +2093,11 @@ function normalizePartnerStatus(status) {
 
 function normalizeAdminOrder(order) {
   return {
+    ...order,
     id: order.id || order.order_number,
+    sourceType: order.sourceType || order.source_type || 'order',
+    dbId: order.dbId || order.db_id || order.id,
+    orderNumber: order.orderNumber || order.order_number || order.id,
     customerName: order.customerName || `${order.customer_firstname || ''} ${order.customer_lastname || ''}`.trim(),
     customerEmail: order.customerEmail || order.customer_email,
     customerPhone: order.customerPhone || order.customer_phone || '',
@@ -1932,12 +2107,17 @@ function normalizeAdminOrder(order) {
     spot: order.spot || '',
     partner: order.partner || order.partner_name || '',
     partnerId: order.partnerId || order.partner_id,
+    formulaId: order.formulaId || order.formula_id,
     amount: order.amount || 0,
     status: order.status || 'en attente',
     boughtAt: order.boughtAt || order.created_at,
+    updatedAt: order.updatedAt || order.updated_at,
     desiredDate: order.desiredDate || '',
     paymentMethod: order.paymentMethod || order.payment_provider || order.payment_status || '',
     paymentStatus: order.paymentStatus || order.payment_status || '',
+    paymentStatusLabel: order.paymentStatusLabel || (order.paymentStatus === 'paid' || order.payment_status === 'paid' ? 'Payée' : 'Initiée'),
+    paymentLink: order.paymentLink || order.payment_link || '',
+    voucherUrl: order.voucherUrl || order.voucher_url || '',
     isAbandoned: Boolean(order.isAbandoned ?? (order.payment_provider === 'stripe' && order.payment_status === 'pending')),
     consumptionStatusLabel: order.consumptionStatusLabel || (order.consumed_at || order.consumedAt ? 'Consommée' : 'Non consommée'),
     consumedAt: order.consumedAt || order.consumed_at || '',
@@ -2177,6 +2357,11 @@ function formatCurrency(value) {
 }
 
 function formatDate(value) {
-  if (!value) return '-';
-  return new Intl.DateTimeFormat('fr-FR').format(new Date(value));
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('fr-FR', {
+    dateStyle: 'short',
+    timeStyle: 'short'
+  }).format(date);
 }
