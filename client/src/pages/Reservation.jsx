@@ -79,13 +79,15 @@ export default function Reservation() {
           }));
           setStatus('ready');
         } else {
+          const resumedDate = dateInputValue(data.desiredDate);
           setBooking((current) => ({
             ...current,
             customerFirstname: data.firstName || '',
             customerLastname: data.lastName || '',
             customerEmail: data.email || '',
             customerPhone: data.phone || '',
-            desiredDate: data.desiredDate || ''
+            desiredDate: resumedDate,
+            dateFlexible: !resumedDate
           }));
         }
         setStep(stepFromName(data.lastStep));
@@ -941,6 +943,11 @@ function SummaryRow({ label, value }) {
 function formatReservationDate(value) {
   if (!value) return '-';
   return new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(value));
+}
+
+function dateInputValue(value) {
+  const date = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
 }
 
 function stepName(step) {

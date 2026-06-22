@@ -2058,13 +2058,18 @@ function orderDetailForm(order) {
     amount: order.amount || 0,
     city: order.city || '',
     spot: order.spot || '',
-    desiredDate: String(order.desiredDate || '').slice(0, 10),
+    desiredDate: dateInputValue(order.desiredDate),
     status: order.status || 'initiated',
     paymentStatus: order.paymentStatus || 'unpaid',
     partnerId: order.partnerId || '',
     formulaId: order.formulaId || '',
     notes: order.notes || ''
   };
+}
+
+function dateInputValue(value) {
+  const date = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
 }
 
 function splitDisplayName(value) {
@@ -2263,9 +2268,10 @@ function formulasToSchoolFormulas(formulas = []) {
   formulas.forEach((formula) => {
     const type = normalizeFormulaType(formula.category || formula.type);
     if (!stages[type]) return;
+    const active = Boolean(formula.active ?? formula.isActive ?? true);
     stages[type] = {
       ...stages[type],
-      enabled: true,
+      enabled: active,
       name: formula.name || formula.title || stages[type].name,
       price: String(formula.price || formula.spotykitePrice || formula.publicPrice || stages[type].price),
       defaultPrice: String(formula.priceRules?.defaultPrice || formula.price || stages[type].price),
@@ -2276,7 +2282,7 @@ function formulasToSchoolFormulas(formulas = []) {
       duration: formula.duration || stages[type].duration,
       level: formula.level || stages[type].level,
       shortDescription: formula.shortDescription || formula.description || stages[type].shortDescription,
-      isActive: Boolean(formula.active ?? formula.isActive ?? true),
+      isActive: active,
       displayOrder: formula.displayOrder ?? formula.display_order ?? stages[type].displayOrder
     };
   });

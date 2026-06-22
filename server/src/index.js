@@ -1863,11 +1863,11 @@ function syncSchoolFormulas(schoolId, body) {
   const configuredTypes = configured.map((formula) => formula.formulaType);
   schoolFormulaDefinitions.forEach((definition) => {
     if (!configuredTypes.includes(definition.type)) {
-      run('UPDATE offers SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE schoolId = ? AND category = ?', [schoolId, definition.type]);
+      run(`UPDATE offers SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE schoolId = ? AND category IN (${formulaCategoryPlaceholders(definition.type)})`, [schoolId, ...formulaCategoryAliases(definition.type)]);
     }
   });
   configured.forEach((formula) => {
-    const existing = row('SELECT id FROM offers WHERE schoolId = ? AND category = ?', [schoolId, formula.formulaType]);
+    const existing = row(`SELECT id FROM offers WHERE schoolId = ? AND category IN (${formulaCategoryPlaceholders(formula.formulaType)})`, [schoolId, ...formulaCategoryAliases(formula.formulaType)]);
     const payload = formulaPayload({
       schoolId,
       name: formula.name,
@@ -1922,9 +1922,10 @@ function normalizeSchoolFormulas(input) {
     ? input
     : Object.entries(input || {}).map(([formulaType, value]) => ({ formulaType, ...value }));
   return items
-    .filter((item) => item?.enabled || item?.isActive || item?.active)
+    .filter((item) => Object.prototype.hasOwnProperty.call(item || {}, 'enabled') ? Boolean(item.enabled) : Boolean(item?.isActive || item?.active))
     .map((item) => {
-      const definition = schoolFormulaDefinitions.find((definition) => definition.type === (item.formulaType || item.type || item.category)) || schoolFormulaDefinitions[0];
+      const formulaType = normalizeSchoolFormulaType(item.formulaType || item.type || item.category);
+      const definition = schoolFormulaDefinitions.find((definition) => definition.type === formulaType) || schoolFormulaDefinitions[0];
       return {
         formulaType: definition.type,
         name: item.name || definition.name,
@@ -1941,6 +1942,18 @@ function normalizeSchoolFormulas(input) {
         displayOrder: Number(item.displayOrder ?? definition.displayOrder)
       };
     });
+}
+
+function normalizeSchoolFormulaType(value = '') {
+  return value === 'perfectionnement' ? 'progression' : value;
+}
+
+function formulaCategoryAliases(type) {
+  return type === 'progression' ? ['progression', 'perfectionnement'] : [type];
+}
+
+function formulaCategoryPlaceholders(type) {
+  return formulaCategoryAliases(type).map(() => '?').join(', ');
 }
 
 const schoolFormulaDefinitions = [
@@ -2129,6 +2142,68 @@ function getOrderPaymentLink(order) {
   if (metadata.stripeCheckoutUrl) return metadata.stripeCheckoutUrl;
   if (metadata.resumeToken) return `${frontendUrl}/reservation/reprendre/${encodeURIComponent(metadata.resumeToken)}`;
   return '';
+}
+
+function ensureOrderRecoveryLink(order) {
+  if (!order) return '';
+  const existingLink = getOrderPaymentLink(order);
+  if (existingLink) return existingLink;
+
+  const metadata = parseMetadata(order.metadata);
+  const token = metadata.resumeToken || crypto.randomBytes(24).toString('hex');
+  const resumeUrl = `/reservation/reprendre/${token}`;
+  const paymentLink = absoluteFrontendPath(resumeUrl);
+  const schoolId = nullableNumber(metadata.schoolId || metadata.school_id || resolveOrderSchoolId(order));
+  const formulaId = nullableNumber(metadata.formulaId || metadata.formula_id || metadata.offerId || metadata.offer_id);
+  const desiredDate = metadata.desiredDate || metadata.desired_date || metadata.selectedDate || metadata.selected_date || '';
+  const existingInitiated = row('SELECT * FROM initiated_orders WHERE resume_token = ?', [token]);
+  const initiatedValues = [
+    metadata.type || order.product_type || 'booking',
+    'initiated',
+    order.payment_status === 'paid' ? 'paid' : 'unpaid',
+    schoolId,
+    formulaId,
+    desiredDate,
+    order.customer_firstname || '',
+    order.customer_lastname || '',
+    order.customer_email || '',
+    order.customer_phone || '',
+    nullableNumber(order.amount),
+    metadata.sourcePage || metadata.source_page || '',
+    token,
+    resumeUrl,
+    metadata.lastStep || metadata.last_step || 'payment',
+    metadata.message || '',
+    existingInitiated?.expires_at || futureDate(30)
+  ];
+
+  if (existingInitiated) {
+    run(`
+      UPDATE initiated_orders
+      SET type = ?, status = ?, payment_status = ?, school_id = ?, formula_id = ?,
+        desired_date = ?, first_name = ?, last_name = ?, email = ?, phone = ?, amount = ?, source_page = ?,
+        resume_token = ?, resume_url = ?, last_step = ?, message = ?, expires_at = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE resume_token = ?
+    `, [...initiatedValues, token]);
+  } else {
+    run(`
+      INSERT INTO initiated_orders (type, status, payment_status, school_id, formula_id, desired_date, first_name, last_name, email, phone, amount, source_page, resume_token, resume_url, last_step, message, expires_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `, initiatedValues);
+    const initiated = row('SELECT id FROM initiated_orders WHERE resume_token = ?', [token]);
+    if (initiated) {
+      recordOrderEvent({ initiatedOrderId: initiated.id, eventType: 'order_created', content: 'Commande initiée créée depuis une commande Stripe en attente.', metadata: { orderId: order.id, orderNumber: order.order_number, resumeToken: token } });
+    }
+  }
+
+  const nextMetadata = { ...metadata, resumeToken: token, resumeUrl, recoveryLink: paymentLink };
+  run(`
+    UPDATE orders
+    SET payment_link = ?, metadata = ?, reservation_key = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [paymentLink, JSON.stringify(nextMetadata), `resume:${token}`, order.id]);
+  recordOrderEvent({ orderId: order.id, eventType: 'manual_update', author: 'system', content: 'Lien de reprise généré pour relance commande initiée.', metadata: { resumeToken: token, paymentLink } });
+  return paymentLink;
 }
 
 function createPendingStripeOrder(body) {
@@ -3310,39 +3385,39 @@ function serializeOrder(order) {
 }
 
 function serializeInitiatedAsOrder(item) {
-  const name = `${item.first_name || ''} ${item.last_name || ''}`.trim();
+  const resumableItem = ensureInitiatedOrderResumeLink(item);
   return {
-    ...item,
+    ...resumableItem,
     sourceType: 'initiated_order',
-    id: `INIT-${item.id}`,
-    dbId: item.id,
-    orderNumber: `INIT-${item.id}`,
-    customerName: name,
-    customerEmail: item.email || '',
-    customerPhone: item.phone || '',
-    product: item.formulaName || item.type || 'Réservation initiée',
-    offerType: item.type || 'booking',
-    city: item.city || '',
-    spot: item.spot || '',
-    partner: item.schoolName || '',
-    partnerId: item.school_id,
-    formulaId: item.formula_id,
-    amount: item.amount || 0,
-    status: item.status || 'initiated',
-    boughtAt: item.created_at,
-    updatedAt: item.updated_at,
-    desiredDate: item.desired_date || '',
+    id: `INIT-${resumableItem.id}`,
+    dbId: resumableItem.id,
+    orderNumber: `INIT-${resumableItem.id}`,
+    customerName: `${resumableItem.first_name || ''} ${resumableItem.last_name || ''}`.trim(),
+    customerEmail: resumableItem.email || '',
+    customerPhone: resumableItem.phone || '',
+    product: resumableItem.formulaName || resumableItem.type || 'Réservation initiée',
+    offerType: resumableItem.type || 'booking',
+    city: resumableItem.city || '',
+    spot: resumableItem.spot || '',
+    partner: resumableItem.schoolName || '',
+    partnerId: resumableItem.school_id,
+    formulaId: resumableItem.formula_id,
+    amount: resumableItem.amount || 0,
+    status: resumableItem.status || 'initiated',
+    boughtAt: resumableItem.created_at,
+    updatedAt: resumableItem.updated_at,
+    desiredDate: resumableItem.desired_date || '',
     paymentMethod: 'lien de reprise',
-    paymentStatus: item.payment_status || 'unpaid',
-    paymentStatusLabel: item.payment_status === 'paid' ? 'Payée' : 'Initiée',
+    paymentStatus: resumableItem.payment_status || 'unpaid',
+    paymentStatusLabel: resumableItem.payment_status === 'paid' ? 'Payée' : 'Initiée',
     isAbandoned: false,
-    paymentLink: item.payment_link || absoluteFrontendPath(item.resume_url),
-    resumeUrl: item.resume_url,
-    resumeToken: item.resume_token,
+    paymentLink: resumableItem.payment_link || absoluteFrontendPath(resumableItem.resume_url),
+    resumeUrl: resumableItem.resume_url,
+    resumeToken: resumableItem.resume_token,
     consumptionStatusLabel: 'Non consommée',
     partnerPayoutStatus: 'not_payable',
     partnerPayoutLabel: 'Non payable',
-    notes: item.internal_note || item.message || ''
+    notes: resumableItem.internal_note || resumableItem.message || ''
   };
 }
 
@@ -3350,6 +3425,20 @@ function absoluteFrontendPath(pathOrUrl = '') {
   if (!pathOrUrl) return '';
   if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
   return `${frontendUrl}${pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`}`;
+}
+
+function ensureInitiatedOrderResumeLink(item) {
+  if (!item) return item;
+  const token = item.resume_token || crypto.randomBytes(24).toString('hex');
+  const resumeUrl = item.resume_url || `/reservation/reprendre/${token}`;
+  if (token !== item.resume_token || resumeUrl !== item.resume_url) {
+    run(`
+      UPDATE initiated_orders
+      SET resume_token = ?, resume_url = ?, expires_at = COALESCE(expires_at, ?), updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [token, resumeUrl, futureDate(30), item.id]);
+  }
+  return { ...item, resume_token: token, resume_url: resumeUrl };
 }
 
 function getAdminOrderDetail(id) {
@@ -3437,12 +3526,16 @@ async function sendManualOrderEmail(order, template) {
   if (type === 'A1') {
     if (order.paymentStatus === 'paid') throw Object.assign(new Error('La commande est déjà payée.'), { status: 409 });
     if (!order.customerEmail) throw Object.assign(new Error('Email client manquant.'), { status: 400 });
-    if (!order.paymentLink) throw Object.assign(new Error('Lien de paiement ou reprise manquant.'), { status: 400 });
+    if (!Number(order.amount)) throw Object.assign(new Error('Montant de commande manquant.'), { status: 400 });
+    const paymentLink = order.sourceType === 'order'
+      ? ensureOrderRecoveryLink(row('SELECT * FROM orders WHERE id = ?', [order.dbId]))
+      : order.paymentLink || absoluteFrontendPath(order.resumeUrl || '');
+    if (!paymentLink) throw Object.assign(new Error('Lien de paiement ou reprise manquant.'), { status: 400 });
     const result = await getResendClient().emails.send({
       from: mailFrom(),
       to: order.customerEmail,
       subject: 'Finaliser votre commande Spotykite',
-      html: manualPaymentReminderHtml(order)
+      html: manualPaymentReminderHtml({ ...order, paymentLink })
     });
     if (result?.error) throw result.error;
     if (order.sourceType === 'initiated_order') {
@@ -3486,7 +3579,7 @@ function manualPaymentReminderHtml(order) {
       <p>Votre commande Spotykite a bien été initiée, mais le paiement n’est pas encore finalisé.</p>
       <p>Vous pouvez reprendre votre réservation et finaliser votre commande depuis le lien ci-dessous.</p>
       <p style="margin:24px 0">
-        <a href="${escapeHtml(order.paymentLink)}" style="display:inline-block;background:#2DD4BF;color:#12385C;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:12px">Finaliser ma commande</a>
+        <a href="${escapeHtml(order.paymentLink)}" style="display:inline-block;background:#2DD4BF;color:#12385C;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:12px">Reprendre ma commande</a>
       </p>
       <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;margin-top:18px">
         ${emailRows([
@@ -3593,29 +3686,30 @@ function leadPayload(body, orderId) {
 }
 
 function serializeInitiatedOrder(item) {
+  const resumableItem = ensureInitiatedOrderResumeLink(item);
   return {
-    ...item,
+    ...resumableItem,
     kind: 'order',
-    dbId: item.id,
-    type: item.type,
-    status: item.status,
-    paymentStatus: item.payment_status,
-    schoolId: item.school_id,
-    formulaId: item.formula_id,
-    schoolName: item.schoolName || item.school_name || '',
-    formulaName: item.formulaName || item.formula_name || '',
-    desiredDate: item.desired_date,
-    firstName: item.first_name,
-    lastName: item.last_name,
-    email: item.email,
-    phone: item.phone,
-    sourcePage: item.source_page,
-    resumeToken: item.resume_token,
-    resumeUrl: item.resume_url,
-    lastStep: item.last_step,
-    internalNote: item.internal_note || '',
-    updatedAt: item.updated_at,
-    createdAt: item.created_at
+    dbId: resumableItem.id,
+    type: resumableItem.type,
+    status: resumableItem.status,
+    paymentStatus: resumableItem.payment_status,
+    schoolId: resumableItem.school_id,
+    formulaId: resumableItem.formula_id,
+    schoolName: resumableItem.schoolName || resumableItem.school_name || '',
+    formulaName: resumableItem.formulaName || resumableItem.formula_name || '',
+    desiredDate: resumableItem.desired_date,
+    firstName: resumableItem.first_name,
+    lastName: resumableItem.last_name,
+    email: resumableItem.email,
+    phone: resumableItem.phone,
+    sourcePage: resumableItem.source_page,
+    resumeToken: resumableItem.resume_token,
+    resumeUrl: resumableItem.resume_url,
+    lastStep: resumableItem.last_step,
+    internalNote: resumableItem.internal_note || '',
+    updatedAt: resumableItem.updated_at,
+    createdAt: resumableItem.created_at
   };
 }
 
