@@ -45,6 +45,28 @@ function getStripeClient() {
   return stripeClient;
 }
 
+async function retrieveResumePaymentIntent(stripe, stripeId) {
+  const id = String(stripeId || '').trim();
+  if (!id) return null;
+
+  if (id.startsWith('pi_')) {
+    console.log('[resume-payment]', { stripeId: id, typeDetected: 'payment_intent', paymentIntentId: id });
+    return stripe.paymentIntents.retrieve(id);
+  }
+
+  if (id.startsWith('cs_')) {
+    const session = await stripe.checkout.sessions.retrieve(id, { expand: ['payment_intent'] });
+    const paymentIntent = session.payment_intent;
+    const paymentIntentId = typeof paymentIntent === 'string' ? paymentIntent : paymentIntent?.id || '';
+    console.log('[resume-payment]', { stripeId: id, typeDetected: 'checkout_session', paymentIntentId });
+    if (!paymentIntentId) return null;
+    return typeof paymentIntent === 'object' ? paymentIntent : stripe.paymentIntents.retrieve(paymentIntentId);
+  }
+
+  console.log('[resume-payment]', { stripeId: id, typeDetected: 'unknown', paymentIntentId: '' });
+  return null;
+}
+
 console.log('[env] STRIPE_SECRET_KEY', stripeSecretKeyStatus());
 console.log('[env] STRIPE_WEBHOOK_SECRET', process.env.STRIPE_WEBHOOK_SECRET ? 'OK' : 'MISSING');
 console.log('[env] RESEND_API_KEY', process.env.RESEND_API_KEY ? 'OK' : 'MISSING');
@@ -564,9 +586,10 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       amount: numericAmount
     });
 
-    if (savedOrder?.payment_id) {
+    const existingStripeId = savedOrder?.payment_id || savedOrder?.stripe_session_id || '';
+    if (existingStripeId) {
       try {
-        const existingPaymentIntent = await stripe.paymentIntents.retrieve(savedOrder.payment_id);
+        const existingPaymentIntent = await retrieveResumePaymentIntent(stripe, existingStripeId);
         const expectedAmount = Math.round(numericAmount * 100);
         if (existingPaymentIntent && !['canceled', 'succeeded'].includes(existingPaymentIntent.status) && existingPaymentIntent.amount === expectedAmount) {
           console.log('[stripe:create-payment-intent] reused existing payment intent', {
@@ -596,7 +619,7 @@ app.post('/api/payments/create-payment-intent', async (req, res) => {
       } catch (error) {
         console.warn('[stripe:create-payment-intent] existing payment intent could not be reused', {
           orderId: savedOrder.id,
-          paymentIntentId: savedOrder.payment_id,
+          stripeId: existingStripeId,
           error: serializeError(error)
         });
       }
@@ -790,19 +813,19 @@ app.post('/api/payments/confirm-gift-card-payment', async (req, res) => {
 
 app.get('/api/payments/payment-intent/:paymentIntentId', async (req, res) => {
   const stripe = getStripeClient();
-  let order = row('SELECT * FROM orders WHERE payment_id = ?', [req.params.paymentIntentId]);
+  let order = row('SELECT * FROM orders WHERE payment_id = ? OR stripe_session_id = ?', [req.params.paymentIntentId, req.params.paymentIntentId]);
   if (!order) return res.status(404).json({ error: 'Paiement Stripe introuvable' });
 
   if (stripe && order.payment_status !== 'paid') {
     try {
-      const paymentIntent = await stripe.paymentIntents.retrieve(req.params.paymentIntentId);
+      const paymentIntent = await retrieveResumePaymentIntent(stripe, req.params.paymentIntentId);
       console.log('PaymentIntent récupéré depuis page retour', {
-        paymentIntentId: paymentIntent.id,
-        status: paymentIntent.status,
-        customerEmail: paymentIntent.receipt_email || paymentIntent.metadata?.customerEmail
+        paymentIntentId: paymentIntent?.id || '',
+        status: paymentIntent?.status || '',
+        customerEmail: paymentIntent?.receipt_email || paymentIntent?.metadata?.customerEmail
       });
 
-      if (paymentIntent.status === 'succeeded') {
+      if (paymentIntent?.status === 'succeeded') {
         const paidOrder = markStripePaymentIntentPaid(paymentIntent);
         if (paidOrder) {
           await sendStripePaymentEmails(paidOrder, paymentIntent);
