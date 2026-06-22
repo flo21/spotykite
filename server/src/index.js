@@ -2231,18 +2231,68 @@ function ensureOrderRecoveryLink(order) {
 
 function createPendingStripeOrder(body) {
   const metadata = body.metadata || {};
-  const partnerId = body.partnerId || body.partner_id || resolveOrderSchoolId(metadata);
+  const schoolId = nullableNumber(metadata.schoolId || metadata.school_id || resolveOrderSchoolId(metadata));
+  const offerId = nullableNumber(metadata.offerId || metadata.offer_id);
+  const formulaId = nullableNumber(metadata.formulaId || metadata.formula_id || offerId);
+  const requestedPartnerId = nullableNumber(body.partnerId || body.partner_id);
+  const partnerId = resolveExistingPartnerId(requestedPartnerId);
+  const stageId = resolveExistingStageId(body.stage_id || body.stageId);
+  const reservationKey = body.reservationKey || body.reservation_key || '';
+  const title = body.title || body.product || metadata.offerName || metadata.title || '';
+  console.log('[createPendingStripeOrder]', {
+    schoolId,
+    offerId,
+    formulaId,
+    reservationKey,
+    customerEmail: body.customerEmail || body.customer_email || ''
+  });
+  console.log('[createPendingStripeOrder:fk]', {
+    table: 'orders',
+    constraints: ['orders.stage_id -> stages.id', 'orders.partner_id -> partners.id'],
+    requestedPartnerId,
+    partnerId,
+    stageId,
+    schoolExists: schoolId ? Boolean(row('SELECT id FROM schools WHERE id = ?', [schoolId])) : null,
+    offerExists: offerId ? Boolean(row('SELECT id FROM offers WHERE id = ?', [offerId])) : null,
+    formulaExists: formulaId ? Boolean(row('SELECT id FROM offers WHERE id = ?', [formulaId])) : null
+  });
   const payload = orderPayload({
     ...body,
     partnerId,
+    partner_id: partnerId,
+    stageId,
+    stage_id: stageId,
+    title,
     status: 'pending',
     paymentStatus: 'pending',
     paymentProvider: 'stripe'
   });
-  const result = run(`
+  console.log('[createPendingStripeOrder:insert]', {
+    partnerId,
+    schoolId,
+    stageId,
+    offerId,
+    formulaId,
+    title,
+    amount: Number(body.amount || 0),
+    reservationKey
+  });
+  const insertSql = `
     INSERT INTO orders (order_number, customer_firstname, customer_lastname, customer_email, customer_phone, product_type, stage_id, partner_id, city, spot, amount, status, payment_status, payment_provider, payment_id, title, metadata, reservation_key)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, payload);
+  `;
+  let result;
+  try {
+    result = run(insertSql, payload);
+  } catch (error) {
+    console.error('[createPendingStripeOrder:error]', {
+      sql: insertSql.trim(),
+      constraints: ['orders.stage_id -> stages.id', 'orders.partner_id -> partners.id'],
+      payload,
+      error: serializeError(error)
+    });
+    throw error;
+  }
   const order = row('SELECT * FROM orders WHERE id = ?', [result.lastInsertRowid]);
   recordOrderEvent({ orderId: order.id, eventType: 'order_created', content: 'Commande créée en statut pending.', metadata: { paymentProvider: 'stripe' } });
   return order;
@@ -2288,6 +2338,18 @@ function resolveOrderSchoolId(orderOrMetadata = {}) {
   }
   if (orderOrMetadata.partner_id || orderOrMetadata.partnerId) return Number(orderOrMetadata.partner_id || orderOrMetadata.partnerId);
   return null;
+}
+
+function resolveExistingPartnerId(value) {
+  const id = nullableNumber(value);
+  if (!id) return null;
+  return row('SELECT id FROM partners WHERE id = ?', [id]) ? id : null;
+}
+
+function resolveExistingStageId(value) {
+  const id = nullableNumber(value);
+  if (!id) return null;
+  return row('SELECT id FROM stages WHERE id = ?', [id]) ? id : null;
 }
 
 function reservationKeyFor(metadata = {}, customerEmail = '', amount = 0) {
@@ -2571,7 +2633,7 @@ function markStripeCheckoutSessionPaid(session) {
   };
   Object.assign(orderMetadata, ensureGiftCardForPaidOrder(order, orderMetadata));
   Object.assign(orderMetadata, applyOrderGiftCardIfNeeded(order, orderMetadata));
-  const partnerId = order.partner_id || resolveOrderSchoolId(orderMetadata);
+  const partnerId = order.partner_id || resolveExistingPartnerId(resolveOrderSchoolId(orderMetadata));
   const voucherToken = ensureOrderVoucherToken(order);
 
   run(`
@@ -2630,7 +2692,7 @@ function markStripePaymentIntentPaid(paymentIntent) {
   };
   Object.assign(orderMetadata, ensureGiftCardForPaidOrder(order, orderMetadata));
   Object.assign(orderMetadata, applyOrderGiftCardIfNeeded(order, orderMetadata));
-  const partnerId = order.partner_id || resolveOrderSchoolId(orderMetadata);
+  const partnerId = order.partner_id || resolveExistingPartnerId(resolveOrderSchoolId(orderMetadata));
   const voucherToken = ensureOrderVoucherToken(order);
 
   run(`
