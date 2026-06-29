@@ -160,6 +160,39 @@ app.post('/api/payments/stripe-webhook', express.raw({ type: 'application/json' 
 app.use(express.json({ limit: '12mb' }));
 app.use('/uploads', express.static(uploadsDir));
 
+function hashPassword(password, salt = crypto.randomBytes(16).toString('base64url')) {
+  const key = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$16384$8$1$${salt}$${key.toString('base64url')}`;
+}
+
+function verifyPassword(password, storedHash) {
+  const [scheme, n, r, p, salt, hash] = String(storedHash || '').split('$');
+  if (scheme !== 'scrypt' || !n || !r || !p || !salt || !hash) return false;
+
+  const expected = Buffer.from(hash, 'base64url');
+  const actual = crypto.scryptSync(password, salt, expected.length, {
+    N: Number(n),
+    r: Number(r),
+    p: Number(p)
+  });
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+app.post('/api/admin/login', (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email et mot de passe requis' });
+  }
+
+  const admin = row('SELECT id, email, password_hash, role FROM admin_users WHERE lower(email) = lower(?)', [email]);
+  if (!admin || !verifyPassword(password, admin.password_hash)) {
+    return res.status(401).json({ error: 'Identifiants invalides' });
+  }
+
+  return res.json({ email: admin.email, role: admin.role });
+});
+
 const offerSelect = `
   SELECT offers.*, schools.name AS schoolName, schools.slug AS schoolSlug, schools.region, schools.department, schools.city, schools.spot,
     schools.address AS schoolAddress, schools.website AS schoolWebsite, schools.phone AS schoolPhone, schools.email AS schoolEmail,
@@ -194,6 +227,22 @@ seed();
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, name: 'SpotyKite API' });
+});
+
+app.get('/robots.txt', (_req, res) => {
+  res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: ${frontendUrl}/sitemap.xml\n`);
+});
+
+app.get('/sitemap.xml', (_req, res) => {
+  const publishedSeoPages = rows("SELECT slug, updated_at FROM seo_city_pages WHERE status = 'published' ORDER BY slug");
+  const urls = [
+    ['', new Date().toISOString()],
+    ['offrir', new Date().toISOString()],
+    ['stages', new Date().toISOString()],
+    ['ecoles', new Date().toISOString()],
+    ...publishedSeoPages.map((page) => [`stage-kitesurf-${page.slug}`, page.updated_at || new Date().toISOString()])
+  ];
+  res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(([pathName, updatedAt]) => `  <url><loc>${escapeXml(`${frontendUrl}/${pathName}`.replace(/\/$/, '/'))}</loc><lastmod>${new Date(updatedAt).toISOString()}</lastmod></url>`).join('\n')}\n</urlset>`);
 });
 
 app.get('/api/content-blocks', (req, res) => {
@@ -917,7 +966,7 @@ app.post('/api/payments/test-confirmation-email', async (req, res) => {
       offerName: req.body.offerName || 'Stage test Spotykite',
       selectedDate: req.body.selectedDate || 'date à définir',
       desiredDate: req.body.selectedDate || req.body.desiredDate || 'date à définir',
-      schoolPhone: req.body.schoolPhone || '+33184808080',
+      schoolPhone: req.body.schoolPhone || '+33627543222',
       schoolEmail: req.body.schoolEmail || process.env.SPOTYKITE_ADMIN_EMAIL || '',
       schoolAddress: req.body.schoolAddress || 'Adresse test',
       schoolWebsite: req.body.schoolWebsite || frontendUrl
@@ -1259,6 +1308,55 @@ app.get('/api/filters', (_req, res) => {
       max: Number(prices?.maxPrice || 0)
     }
   });
+});
+
+app.get('/api/seo-city-pages', (_req, res) => {
+  const pages = rows('SELECT * FROM seo_city_pages ORDER BY updated_at DESC, city ASC').map(serializeSeoCityPageSummary);
+  res.json(pages);
+});
+
+app.get('/api/seo-city-pages/:id', (req, res) => {
+  const slug = normalizeSeoCityPageSlug(req.params.id);
+  const page = row('SELECT * FROM seo_city_pages WHERE id = ? OR slug = ?', [req.params.id, slug]);
+  if (!page) return res.status(404).json({ error: 'Page introuvable' });
+  res.json(enrichSeoCityPage(page, { preview: true }));
+});
+
+app.post('/api/seo-city-pages', (req, res) => {
+  const payload = seoCityPayload(req.body);
+  const result = run(`
+    INSERT INTO seo_city_pages (
+      city, department, region, slug, meta_title, meta_description, h1, intro, status, radius_km,
+      selected_school_ids, destination_summary, nearby_spots, recommended_level, ideal_period, price_range,
+      latitude, longitude, sections, faq, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `, payload);
+  const page = row('SELECT * FROM seo_city_pages WHERE id = ?', [result.lastInsertRowid]);
+  res.status(201).json(enrichSeoCityPage(page, { preview: true }));
+});
+
+app.put('/api/seo-city-pages/:id', (req, res) => {
+  const existing = row('SELECT * FROM seo_city_pages WHERE id = ?', [req.params.id]);
+  if (!existing) return res.status(404).json({ error: 'Page introuvable' });
+  const payload = seoCityPayload(req.body);
+  run(`
+    UPDATE seo_city_pages SET
+      city = ?, department = ?, region = ?, slug = ?, meta_title = ?, meta_description = ?, h1 = ?, intro = ?,
+      status = ?, radius_km = ?, selected_school_ids = ?, destination_summary = ?, nearby_spots = ?,
+      recommended_level = ?, ideal_period = ?, price_range = ?, latitude = ?, longitude = ?, sections = ?,
+      faq = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [...payload, req.params.id]);
+  const page = row('SELECT * FROM seo_city_pages WHERE id = ?', [req.params.id]);
+  res.json(enrichSeoCityPage(page, { preview: true }));
+});
+
+app.get('/api/public/seo-city-pages/:slug', (req, res) => {
+  const slug = normalizeSeoCityPageSlug(req.params.slug);
+  const page = row('SELECT * FROM seo_city_pages WHERE slug = ? AND status = ?', [slug, 'published']);
+  if (!page) return res.status(404).json({ error: 'Page not found' });
+  if (!isPublishableSeoCityPage(page)) return res.status(404).json({ error: 'Page not publishable' });
+  res.json(enrichSeoCityPage(page));
 });
 
 app.get('/api/schools/:slug', (req, res) => {
@@ -3227,6 +3325,10 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function escapeXml(value) {
+  return escapeHtml(value);
+}
+
 function serializePartner(partner) {
   return {
     ...partner,
@@ -3346,6 +3448,176 @@ function serializeContentBlock(item) {
     fieldKey: item.field_key,
     fieldType: item.field_type
   };
+}
+
+function serializeSeoCityPageSummary(page) {
+  return {
+    id: page.id,
+    city: page.city,
+    department: page.department || '',
+    region: page.region || '',
+    slug: page.slug,
+    url: `/stage-kitesurf-${page.slug}`,
+    status: page.status || 'draft',
+    updatedAt: page.updated_at,
+    metaTitle: page.meta_title || '',
+    metaDescription: page.meta_description || '',
+    h1: page.h1 || ''
+  };
+}
+
+function serializeSeoCityPage(page) {
+  return {
+    ...serializeSeoCityPageSummary(page),
+    intro: page.intro || '',
+    radiusKm: Number(page.radius_km || 50),
+    selectedSchoolIds: parseJson(page.selected_school_ids, []),
+    destinationSummary: page.destination_summary || '',
+    nearbySpots: parseJson(page.nearby_spots, []),
+    recommendedLevel: page.recommended_level || '',
+    idealPeriod: page.ideal_period || '',
+    priceRange: page.price_range || '',
+    latitude: page.latitude,
+    longitude: page.longitude,
+    sections: normalizeSeoSections(parseJson(page.sections, {}), page.city),
+    faq: normalizeSeoFaq(parseJson(page.faq, []), page.city)
+  };
+}
+
+function enrichSeoCityPage(page, { preview = false } = {}) {
+  const serialized = serializeSeoCityPage(page);
+  const schools = seoCitySchools(serialized);
+  const minPrice = schools.reduce((min, school) => school.startingPrice ? Math.min(min, Number(school.startingPrice)) : min, Infinity);
+  return {
+    ...serialized,
+    publishable: isPublishableSeoCityPage(page),
+    schools,
+    exactSchools: schools.filter((school) => school.matchType === 'city'),
+    nearbySchools: schools.filter((school) => school.matchType !== 'city'),
+    computedMinPrice: Number.isFinite(minPrice) ? minPrice : null,
+    preview
+  };
+}
+
+function seoCityPayload(body) {
+  const city = String(body.city || '').trim();
+  const slug = slugify(String(body.slug || city).replace(/^stage-kitesurf-/, ''));
+  const sections = normalizeSeoSections(body.sections || {}, city);
+  const faq = normalizeSeoFaq(body.faq || [], city);
+  return [
+    city,
+    String(body.department || '').trim(),
+    String(body.region || '').trim(),
+    slug,
+    String(body.metaTitle || body.meta_title || `Stage de kitesurf à ${city}`).trim(),
+    String(body.metaDescription || body.meta_description || `Trouvez une école de kitesurf à ${city} ou à proximité et réservez votre stage facilement.`).trim(),
+    String(body.h1 || `Stage de kitesurf à ${city}`).trim(),
+    String(body.intro || '').trim(),
+    ['published', 'draft'].includes(body.status) ? body.status : 'draft',
+    Number(body.radiusKm || body.radius_km || 50),
+    JSON.stringify((body.selectedSchoolIds || body.selected_school_ids || []).map(Number).filter(Boolean)),
+    String(body.destinationSummary || body.destination_summary || '').trim(),
+    JSON.stringify(Array.isArray(body.nearbySpots) ? body.nearbySpots.filter(Boolean) : String(body.nearbySpots || '').split('\n').map((item) => item.trim()).filter(Boolean)),
+    String(body.recommendedLevel || body.recommended_level || '').trim(),
+    String(body.idealPeriod || body.ideal_period || '').trim(),
+    String(body.priceRange || body.price_range || '').trim(),
+    nullableNumber(body.latitude),
+    nullableNumber(body.longitude),
+    JSON.stringify(sections),
+    JSON.stringify(faq)
+  ];
+}
+
+function normalizeSeoSections(sections = {}, city = '') {
+  const defaults = {
+    why: `Faire un stage de kitesurf à ${city || '[ville]'} permet de découvrir la pratique avec un encadrement adapté, des spots accessibles et des formules pensées pour progresser.`,
+    spots: `Les spots autour de ${city || '[ville]'} permettent d’adapter la séance au niveau, au vent et aux objectifs pédagogiques.`,
+    around: `Autour de ${city || '[ville]'}, comparez les écoles disponibles selon le spot, les niveaux acceptés et les formules proposées.`,
+    choose: 'Le bon format dépend du niveau, de l’autonomie actuelle et du temps disponible.',
+    audience: 'Un stage peut convenir à différents profils dès lors que la formule, le spot et l’encadrement sont adaptés.',
+    level: 'Les débutants peuvent commencer avec une initiation encadrée, puis progresser vers un stage de plusieurs jours selon les conditions météo.',
+    price: `Le prix d’un stage de kitesurf à ${city || '[ville]'} dépend de la durée, du format et de l’école sélectionnée.`,
+    period: 'La meilleure période dépend du vent local, de la température et de l’organisation des écoles partenaires.',
+    whySpotykite: 'Spotykite aide à comparer les écoles, les formules et les disponibilités avant de réserver.',
+    firstLesson: 'Un premier cours commence généralement par l’accueil, l’équipement, un briefing sécurité et les premiers exercices de pilotage.',
+    gift: `Vous pouvez offrir une carte cadeau kitesurf valable pour une expérience à ${city || '[ville]'} ou dans une école Spotykite participante.`
+  };
+  return Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, String(sections[key] || value)]));
+}
+
+function normalizeSeoFaq(faq = [], city = '') {
+  const items = Array.isArray(faq) ? faq : [];
+  const defaults = [
+    [`Où faire un stage de kitesurf à ${city || '[ville]'} ?`, `Vous pouvez réserver auprès des écoles disponibles à ${city || 'cette destination'} ou dans les spots proches.`],
+    [`Combien coûte un cours de kitesurf à ${city || '[ville]'} ?`, 'Le prix dépend de la formule, de la durée et de l’école sélectionnée.'],
+    [`Peut-on débuter le kitesurf à ${city || '[ville]'} ?`, 'Oui, les formules d’initiation sont prévues pour découvrir les bases avec un moniteur.']
+  ];
+  const normalized = items
+    .map((item) => ({ question: String(item.question || '').trim(), answer: String(item.answer || '').trim() }))
+    .filter((item) => item.question || item.answer);
+  return normalized.length ? normalized : defaults.map(([question, answer]) => ({ question, answer }));
+}
+
+function isPublishableSeoCityPage(page) {
+  const serialized = serializeSeoCityPage(page);
+  const hasSeoSection = Object.values(serialized.sections || {}).some((value) => String(value || '').trim().length > 40);
+  const hasFaq = (serialized.faq || []).some((item) => item.question && item.answer);
+  return Boolean(
+    serialized.city &&
+    serialized.slug &&
+    serialized.metaTitle &&
+    serialized.metaDescription &&
+    serialized.h1 &&
+    serialized.intro &&
+    hasSeoSection &&
+    hasFaq
+  );
+}
+
+function seoCitySchools(page) {
+  const schools = rows(`${schoolSelect}
+    WHERE COALESCE(schools.status, 'active') = 'active'
+      AND COALESCE(schools.front_visibility, 'active') = 'active'
+    GROUP BY schools.id
+    ORDER BY schools.city, schools.name
+  `).map(serializeSchool);
+  const selectedIds = new Set((page.selectedSchoolIds || []).map(Number));
+  const citySlug = slugify(page.city);
+  const lat = Number(page.latitude);
+  const lng = Number(page.longitude);
+  const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng);
+
+  const enriched = schools.map((school) => {
+    const exact = slugify(school.city) === citySlug || slugify(school.spot) === citySlug;
+    const distance = hasCoordinates && hasValidCoordinates(school)
+      ? distanceKm(lat, lng, Number(school.latitude), Number(school.longitude))
+      : null;
+    return {
+      ...school,
+      matchType: exact ? 'city' : selectedIds.has(Number(school.id)) ? 'selected' : 'nearby',
+      distanceKm: distance === null ? null : Math.round(distance * 10) / 10
+    };
+  });
+
+  const exactOrSelected = enriched.filter((school) => school.matchType === 'city' || selectedIds.has(Number(school.id)));
+  if (exactOrSelected.length) return exactOrSelected.sort(sortSeoSchools);
+
+  const radius = Number(page.radiusKm || 50);
+  const nearby = enriched
+    .filter((school) => school.distanceKm !== null && school.distanceKm <= radius)
+    .sort(sortSeoSchools);
+  if (nearby.length) return nearby.slice(0, 8);
+
+  return enriched
+    .filter((school) => school.department === page.department || school.region === page.region)
+    .slice(0, 8)
+    .sort(sortSeoSchools);
+}
+
+function sortSeoSchools(a, b) {
+  if (a.matchType === 'city' && b.matchType !== 'city') return -1;
+  if (b.matchType === 'city' && a.matchType !== 'city') return 1;
+  return Number(a.distanceKm ?? 9999) - Number(b.distanceKm ?? 9999) || String(a.name).localeCompare(String(b.name), 'fr');
 }
 
 function serializeAvailability(item) {
@@ -3940,6 +4212,30 @@ function normalizeFrontVisibility(value) {
 
 function normalizeSlugQuery(value) {
   return String(value || '').replace(/-/g, ' ').trim();
+}
+
+function normalizeSeoCityPageSlug(value) {
+  return slugify(String(value || '').replace(/^\/+/, '').replace(/^stage-kitesurf-/, '').split('?')[0]);
+}
+
+function parseJson(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const earthRadius = 6371;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2;
+  return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function toRadians(value) {
+  return value * Math.PI / 180;
 }
 
 function slugify(value) {

@@ -1,4 +1,8 @@
 import { migrate, row, run } from './db.js';
+import { config } from 'dotenv';
+import { fileURLToPath } from 'node:url';
+
+config({ path: fileURLToPath(new URL('../.env', import.meta.url)), quiet: true });
 
 const testEmailDomain = 'example.test';
 const legacyEmailDomains = ['demo.spotykite.test', testEmailDomain];
@@ -218,11 +222,15 @@ export function seed() {
   }
 
   if (row('SELECT COUNT(*) AS total FROM admin_users').total === 0) {
-    run('INSERT INTO admin_users (email, password_hash, role) VALUES (?, ?, ?)', [
-      'admin@spotykite.fr',
-      'temporary-hash-change-me',
-      'admin'
-    ]);
+    const adminEmail = process.env.ADMIN_USER_EMAIL || process.env.SPOTYKITE_ADMIN_EMAIL;
+    const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || process.env.SPOTYKITE_ADMIN_PASSWORD_HASH;
+    if (adminEmail && adminPasswordHash) {
+      run('INSERT INTO admin_users (email, password_hash, role) VALUES (?, ?, ?)', [
+        adminEmail,
+        adminPasswordHash,
+        'admin'
+      ]);
+    }
   }
 }
 

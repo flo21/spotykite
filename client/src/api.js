@@ -15,11 +15,17 @@ async function request(path, options = {}) {
 
 export const api = {
   spotStats: () => request('/spots/stats'),
+  adminLogin: (payload) => request('/admin/login', { method: 'POST', body: JSON.stringify(payload) }),
   contentBlocks: (params = {}) => request(`/content-blocks?${new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()}`),
   saveContentBlocks: (payload) => request('/content-blocks', { method: 'PUT', body: JSON.stringify(payload) }),
   uploadImage: (payload) => request('/uploads', { method: 'POST', body: JSON.stringify(payload) }),
   filters: () => request('/filters'),
   mapSchools: (params = {}) => request(`/schools/map?${new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()}`),
+  seoCityPages: () => request('/seo-city-pages'),
+  seoCityPage: (id) => request(`/seo-city-pages/${encodeURIComponent(id)}`),
+  createSeoCityPage: (payload) => request('/seo-city-pages', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSeoCityPage: (id, payload) => request(`/seo-city-pages/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  publicSeoCityPage: (slug) => request(`/public/seo-city-pages/${encodeURIComponent(slug)}`),
   partners: () => request('/partners'),
   createPartner: (payload) => request('/partners', { method: 'POST', body: JSON.stringify(payload) }),
   updatePartner: (id, payload) => request(`/partners/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),

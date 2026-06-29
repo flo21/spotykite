@@ -19,7 +19,7 @@ export default function Layout() {
   const [mobileMega, setMobileMega] = useState(null);
   const [spotStats, setSpotStats] = useState({ regions: [], cities: [], stageTypes: [] });
   const [statsStatus, setStatsStatus] = useState('loading');
-  const phoneNumber = import.meta.env.VITE_SPOTYKITE_PHONE || '+33184808080';
+  const phoneNumber = import.meta.env.VITE_SPOTYKITE_PHONE || '+33627543222';
   const location = useLocation();
 
   useEffect(() => {
@@ -126,7 +126,7 @@ export default function Layout() {
             <NavLink to="/faq" className={({ isActive }) => `px-2 text-sm font-black ${isActive ? 'text-primary' : 'text-white/85 hover:text-primary'}`}>
               FAQ
             </NavLink>
-            <a href="tel:+33184808080" className="inline-grid h-9 w-9 place-items-center rounded-full border border-white/35 bg-white/5 text-white transition hover:border-primary hover:text-primary" aria-label="Telephone">
+            <a href={`tel:${phoneNumber}`} className="inline-grid h-9 w-9 place-items-center rounded-full border border-white/35 bg-white/5 text-white transition hover:border-primary hover:text-primary" aria-label="Telephone">
               <Phone size={14} />
             </a>
             <Link to="/admin" className="inline-grid h-9 w-9 place-items-center rounded-full border border-white/35 bg-white/5 text-white transition hover:border-primary hover:text-primary" aria-label="Compte">

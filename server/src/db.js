@@ -333,6 +333,32 @@ export function migrate() {
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
       FOREIGN KEY (initiated_order_id) REFERENCES initiated_orders(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS seo_city_pages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      city TEXT NOT NULL,
+      department TEXT,
+      region TEXT,
+      slug TEXT NOT NULL UNIQUE,
+      meta_title TEXT NOT NULL DEFAULT '',
+      meta_description TEXT NOT NULL DEFAULT '',
+      h1 TEXT NOT NULL DEFAULT '',
+      intro TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      radius_km INTEGER NOT NULL DEFAULT 50,
+      selected_school_ids TEXT,
+      destination_summary TEXT,
+      nearby_spots TEXT,
+      recommended_level TEXT,
+      ideal_period TEXT,
+      price_range TEXT,
+      latitude REAL,
+      longitude REAL,
+      sections TEXT,
+      faq TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   addColumnIfMissing('bookings', 'giftCardId', 'INTEGER');

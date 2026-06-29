@@ -2,7 +2,7 @@ export default function FAQ() {
   const items = [
     ['Que se passe-t-il si le vent manque ?', 'La securite passe avant tout. L ecole propose un report gratuit si les conditions ne permettent pas une session utile et sure.'],
     ['Faut-il deja etre sportif ?', 'Non. Les baptemes sont concus pour debuter progressivement avec du materiel adapte et un moniteur diplome.'],
-    ['Le materiel est-il inclus ?', 'Oui, aile, planche, combinaison, casque et gilet sont inclus dans les offres de demonstration.'],
+    ['Le materiel est-il inclus ?', 'Oui, aile, planche, combinaison, casque et gilet sont inclus dans les offres proposées.'],
     ['Comment fonctionne une Carte Cadeau SpotyKite ?', 'Vous choisissez une experience ou un montant, ajoutez un message, puis le beneficiaire reserve sa date dans une ecole Spotykite.']
   ];
   return (

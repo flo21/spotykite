@@ -19,11 +19,10 @@ import {
   Trash2,
   Users,
   FileText,
-  CalendarDays
+  CalendarDays,
+  MapPin
 } from 'lucide-react';
 import { api } from '../api.js';
-
-const ADMIN_CODE = 'spotykite-admin';
 
 const initialOrders = [];
 const initialPartners = [];
@@ -140,6 +139,7 @@ function newSchoolPartnerForm() {
 const tabs = [
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['contents', 'Contenus du site', FileText],
+  ['seo-cities', 'Pages SEO villes', MapPin],
   ['orders', 'Commandes', ShoppingBag],
   ['partners', 'Écoles', School],
   ['create-partner', 'Créer une école', Plus],
@@ -151,8 +151,10 @@ const tabs = [
 ];
 
 export default function Admin() {
-  const [unlocked, setUnlocked] = useState(() => localStorage.getItem('spotykite-admin') === 'true');
-  const [code, setCode] = useState('');
+  const [unlocked, setUnlocked] = useState(() => localStorage.getItem('backoffice-authenticated') === 'true');
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loginStatus, setLoginStatus] = useState('idle');
+  const [loginError, setLoginError] = useState('');
   const [tab, setTab] = useState('dashboard');
   const [orders, setOrders] = useState(initialOrders);
   const [partners, setPartners] = useState(initialPartners);
@@ -160,6 +162,7 @@ export default function Admin() {
   const [formulas, setFormulas] = useState([]);
   const [accommodations, setAccommodations] = useState([]);
   const [contentBlocks, setContentBlocks] = useState([]);
+  const [seoCityPages, setSeoCityPages] = useState([]);
   const [availabilities, setAvailabilities] = useState([]);
   const [seasons, setSeasons] = useState([]);
   const [specialOffers, setSpecialOffers] = useState([]);
@@ -196,12 +199,13 @@ export default function Admin() {
   }, [unlocked]);
 
   async function reloadAdminData() {
-    const [nextOrders, nextSchools, nextFormulas, nextAccommodations, nextContentBlocks, nextAvailabilities, nextSeasons, nextSpecialOffers, nextGiftCards] = await Promise.all([
+    const [nextOrders, nextSchools, nextFormulas, nextAccommodations, nextContentBlocks, nextSeoCityPages, nextAvailabilities, nextSeasons, nextSpecialOffers, nextGiftCards] = await Promise.all([
       api.orders(),
       api.schools({ include: 'all' }),
       api.formulas(),
       api.accommodations(),
       api.contentBlocks(),
+      api.seoCityPages(),
       api.availabilities(),
       api.seasons(),
       api.specialOffers(),
@@ -212,6 +216,7 @@ export default function Admin() {
     setFormulas(nextFormulas);
     setAccommodations(nextAccommodations);
     setContentBlocks(nextContentBlocks);
+    setSeoCityPages(nextSeoCityPages);
     setAvailabilities(nextAvailabilities);
     setSeasons(nextSeasons);
     setSpecialOffers(nextSpecialOffers);
@@ -235,18 +240,27 @@ export default function Admin() {
     }
   }
 
-  function unlock(event) {
+  async function unlock(event) {
     event.preventDefault();
-    if (code.trim() === ADMIN_CODE) {
-      localStorage.setItem('spotykite-admin', 'true');
+    setLoginStatus('loading');
+    setLoginError('');
+    try {
+      await api.adminLogin(loginForm);
+      localStorage.setItem('backoffice-authenticated', 'true');
       setUnlocked(true);
+      setLoginForm({ email: '', password: '' });
+    } catch (error) {
+      setLoginError(error.message || 'Connexion impossible.');
+    } finally {
+      setLoginStatus('idle');
     }
   }
 
   function logout() {
-    localStorage.removeItem('spotykite-admin');
+    localStorage.removeItem('backoffice-authenticated');
     setUnlocked(false);
-    setCode('');
+    setLoginForm({ email: '', password: '' });
+    setLoginError('');
   }
 
   async function savePartner(event) {
@@ -348,10 +362,28 @@ export default function Admin() {
         <form onSubmit={unlock} className="mx-auto max-w-md rounded-3xl border border-border bg-white p-6 shadow-lift">
           <p className="eyebrow">Backoffice</p>
           <h1 className="text-4xl font-black text-text">Accès admin SpotyKite</h1>
-          <p className="mt-3 text-sm text-muted">Protection temporaire avant branchement du système d'authentification.</p>
-          <input className="field mt-6" value={code} onChange={(event) => setCode(event.target.value)} placeholder="Code admin" type="password" />
-          <button className="btn-primary mt-4 w-full justify-center">Entrer</button>
-          <p className="mt-4 text-xs font-bold text-muted">Code temporaire : spotykite-admin</p>
+          <input
+            className="field mt-6"
+            value={loginForm.email}
+            onChange={(event) => setLoginForm((current) => ({ ...current, email: event.target.value }))}
+            placeholder="Email"
+            type="email"
+            autoComplete="username"
+            required
+          />
+          <input
+            className="field mt-3"
+            value={loginForm.password}
+            onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+            placeholder="Mot de passe"
+            type="password"
+            autoComplete="current-password"
+            required
+          />
+          {loginError && <p className="mt-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{loginError}</p>}
+          <button className="btn-primary mt-4 w-full justify-center" disabled={loginStatus === 'loading'}>
+            {loginStatus === 'loading' ? 'Connexion...' : 'Entrer'}
+          </button>
         </form>
       </main>
     );
@@ -387,6 +419,7 @@ export default function Admin() {
           {notice && <AdminNotice notice={notice} onClose={() => setNotice(null)} />}
           {tab === 'dashboard' && <Dashboard stats={stats} orders={orders} partners={partners} />}
           {tab === 'contents' && <ContentsPage blocks={contentBlocks} onSaved={reloadAdminData} onNotice={showNotice} />}
+          {tab === 'seo-cities' && <SeoCityPagesPage pages={seoCityPages} schools={partners} onSaved={reloadAdminData} onNotice={showNotice} />}
           {tab === 'orders' && (
             selectedOrder
               ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} onSaved={reloadAdminData} onNotice={showNotice} />
@@ -452,6 +485,7 @@ function AdminHeader({ tab, apiStatus }) {
   const labels = {
     dashboard: 'Dashboard admin',
     contents: 'Contenus du site',
+    'seo-cities': 'Pages SEO villes',
     orders: 'Commandes',
     partners: 'Écoles',
     'create-partner': 'Créer une école',
@@ -468,9 +502,11 @@ function AdminHeader({ tab, apiStatus }) {
         <p className="text-xs font-black uppercase tracking-widest text-ocean">Administration</p>
         <h1 className="text-4xl font-black text-navy">{labels[tab]}</h1>
       </div>
-      <div className="rounded-2xl border border-border bg-white px-4 py-3 text-sm font-bold text-muted shadow-sm">
-        {apiStatus === 'connected' ? 'Connecté à la base de données.' : 'API indisponible, données locales temporaires.'}
-      </div>
+      {tab !== 'contents' && (
+        <div className="rounded-2xl border border-border bg-white px-4 py-3 text-sm font-bold text-muted shadow-sm">
+          {apiStatus === 'connected' ? 'Connecté à la base de données.' : 'API indisponible, données locales temporaires.'}
+        </div>
+      )}
     </header>
   );
 }
@@ -516,99 +552,719 @@ function AdminNotice({ notice, onClose }) {
   );
 }
 
-const defaultContentBlocks = [
-  ['home', 'hero', 'title', 'text', 'Vivez le kitesurf partout en France'],
-  ['home', 'hero', 'subtitle', 'textarea', 'Recherchez une école Spotykite, choisissez une formule ou offrez une carte cadeau valable sur tout le réseau Spotykite.'],
-  ['home', 'gift', 'title', 'text', 'Offrir un stage de kitesurf'],
-  ['home', 'gift', 'subtitle', 'textarea', 'Le cadeau idéal pour découvrir le kitesurf partout en France.'],
-  ['home', 'why', 'title', 'text', 'Pourquoi réserver votre stage de kitesurf avec Spotykite ?'],
-  ['home', 'faq', '1.question', 'text', 'Où faire un stage de kitesurf en France ?'],
-  ['gift-card', 'hero', 'title', 'text', 'Carte Cadeau SpotyKite'],
-  ['gift-card', 'hero', 'subtitle', 'textarea', 'Offrez la liberté de choisir son stage de kitesurf plus tard.'],
-  ['gift-card', 'product', 'price', 'text', '199'],
-  ['footer', 'main', 'description', 'textarea', 'La plateforme pour réserver ou offrir une expérience kitesurf en France.']
-].map(([pageKey, sectionKey, fieldKey, fieldType, value]) => ({ pageKey, sectionKey, fieldKey, fieldType, value, locale: 'fr' }));
+const cmsPages = [
+  {
+    key: 'home',
+    title: 'Accueil',
+    description: 'Page principale, hero, carte cadeau, arguments et FAQ.',
+    sections: [
+      {
+        key: 'hero',
+        title: 'Hero',
+        fields: [
+          { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Vivez le kitesurf partout en France' },
+          { key: 'subtitle', label: 'Sous-titre', type: 'longText', fallback: 'Recherchez une école Spotykite, choisissez une formule ou offrez une carte cadeau valable sur tout le réseau Spotykite.' },
+          { key: 'ctaLabel', label: 'Libellé du bouton', type: 'shortText', fallback: 'Trouver un stage' },
+          { key: 'ctaUrl', label: 'Lien du bouton', type: 'url', fallback: '/stages' }
+        ]
+      },
+      {
+        key: 'gift',
+        title: 'Bloc Carte cadeau',
+        fields: [
+          { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Offrir un stage de kitesurf' },
+          { key: 'subtitle', label: 'Sous-titre', type: 'shortText', fallback: 'Le cadeau idéal pour découvrir le kitesurf partout en France.' },
+          { key: 'text', label: 'Description', type: 'longText', fallback: 'Offrez une carte cadeau valable 1 an dans les écoles Spotykite.' },
+          { key: 'image', label: 'Visuel principal', type: 'image', fallback: '' }
+        ]
+      },
+      {
+        key: 'why',
+        title: 'Bloc Pourquoi Spotykite',
+        fields: [
+          { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Pourquoi réserver votre stage de kitesurf avec Spotykite ?' },
+          { key: 'text', label: 'Description', type: 'longText', fallback: 'Spotykite référence des écoles de kitesurf sélectionnées partout en France pour vous aider à trouver facilement une formule adaptée à votre niveau, votre destination et votre budget.' },
+          { key: 'image', label: 'Visuel d’accompagnement', type: 'image', fallback: '' }
+        ]
+      },
+      {
+        key: 'faq',
+        title: 'FAQ',
+        fields: [
+          { key: '1.question', label: 'Question 1', type: 'shortText', fallback: 'Où faire un stage de kitesurf en France ?' },
+          { key: '1.answer', label: 'Réponse 1', type: 'longText', fallback: 'Les régions les plus demandées sont la Bretagne, la Normandie, la Nouvelle-Aquitaine, l’Occitanie, les Hauts-de-France et la PACA.' },
+          { key: '2.question', label: 'Question 2', type: 'shortText', fallback: 'Combien coûte un stage de kitesurf ?' },
+          { key: '2.answer', label: 'Réponse 2', type: 'longText', fallback: 'Le prix dépend de la durée et du format choisi. Chaque fiche école affiche un prix à partir de.' }
+        ]
+      }
+    ]
+  },
+  {
+    key: 'gift-card',
+    title: 'Carte cadeau',
+    description: 'Page d’achat de carte cadeau et contenus de réassurance.',
+    sections: [
+      {
+        key: 'hero',
+        title: 'Hero',
+        fields: [
+          { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Carte Cadeau SpotyKite' },
+          { key: 'subtitle', label: 'Sous-titre', type: 'longText', fallback: 'Offrez la liberté de choisir son stage de kitesurf plus tard.' },
+          { key: 'image', label: 'Visuel principal', type: 'image', fallback: '' }
+        ]
+      },
+      {
+        key: 'product',
+        title: 'Offre',
+        fields: [
+          { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Carte cadeau kitesurf' },
+          { key: 'description', label: 'Description', type: 'longText', fallback: 'Une carte valable dans les écoles Spotykite participantes.' },
+          { key: 'price', label: 'Prix', type: 'shortText', fallback: '199' },
+          { key: 'ctaLabel', label: 'Libellé du bouton', type: 'shortText', fallback: 'Offrir maintenant' }
+        ]
+      }
+    ]
+  },
+  {
+    key: 'schools',
+    title: 'Écoles',
+    description: 'Page de recherche et liste des écoles partenaires.',
+    sections: [
+      { key: 'hero', title: 'Hero', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Trouvez votre école de kitesurf' },
+        { key: 'subtitle', label: 'Sous-titre', type: 'longText', fallback: 'Comparez les spots, les formules et les disponibilités partout en France.' }
+      ] },
+      { key: 'empty', title: 'Aucun résultat', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Aucune école trouvée' },
+        { key: 'text', label: 'Message', type: 'longText', fallback: 'Essayez une autre destination ou un autre niveau.' }
+      ] }
+    ]
+  },
+  {
+    key: 'school-detail',
+    title: 'Détail école',
+    description: 'Fiche école, formules, informations pratiques et FAQ.',
+    sections: [
+      { key: 'hero', title: 'Hero', fields: [
+        { key: 'title', label: 'Titre générique', type: 'shortText', fallback: 'Stage de kitesurf' },
+        { key: 'subtitle', label: 'Introduction', type: 'longText', fallback: 'Découvrez les formules disponibles et les informations pratiques de cette école.' }
+      ] },
+      { key: 'booking', title: 'Réservation', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Choisissez votre formule' },
+        { key: 'text', label: 'Message', type: 'longText', fallback: 'Sélectionnez une formule puis indiquez vos disponibilités.' }
+      ] }
+    ]
+  },
+  {
+    key: 'reservation',
+    title: 'Réservation',
+    description: 'Tunnel de réservation et messages d’aide.',
+    sections: [
+      { key: 'hero', title: 'Introduction', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Finalisez votre réservation' },
+        { key: 'subtitle', label: 'Sous-titre', type: 'longText', fallback: 'Renseignez vos informations pour préparer votre session.' }
+      ] },
+      { key: 'help', title: 'Aide', fields: [
+        { key: 'text', label: 'Message d’aide', type: 'longText', fallback: 'Notre équipe vous accompagne si les conditions météo nécessitent un report.' }
+      ] }
+    ]
+  },
+  {
+    key: 'payment',
+    title: 'Paiement',
+    description: 'États de paiement et réassurance.',
+    sections: [
+      { key: 'secure', title: 'Paiement sécurisé', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Paiement sécurisé' },
+        { key: 'text', label: 'Description', type: 'longText', fallback: 'Votre paiement est traité par notre prestataire sécurisé.' }
+      ] }
+    ]
+  },
+  {
+    key: 'confirmation',
+    title: 'Confirmation',
+    description: 'Messages après achat ou réservation.',
+    sections: [
+      { key: 'success', title: 'Succès', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Votre réservation est confirmée' },
+        { key: 'text', label: 'Message', type: 'longText', fallback: 'Vous allez recevoir un email récapitulatif avec les prochaines étapes.' }
+      ] }
+    ]
+  },
+  {
+    key: 'faq',
+    title: 'FAQ',
+    description: 'Questions fréquentes générales.',
+    sections: [
+      { key: 'hero', title: 'Introduction', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Questions fréquentes' },
+        { key: 'subtitle', label: 'Sous-titre', type: 'longText', fallback: 'Toutes les réponses pour préparer votre expérience Spotykite.' }
+      ] },
+      { key: 'questions', title: 'Questions', fields: [
+        { key: '1.question', label: 'Question 1', type: 'shortText', fallback: 'Que se passe-t-il si le vent manque ?' },
+        { key: '1.answer', label: 'Réponse 1', type: 'longText', fallback: 'La sécurité passe avant tout. L’école propose un report gratuit si les conditions ne permettent pas une session utile et sûre.' },
+        { key: '2.question', label: 'Question 2', type: 'shortText', fallback: 'Faut-il déjà être sportif ?' },
+        { key: '2.answer', label: 'Réponse 2', type: 'longText', fallback: 'Non. Les baptêmes sont conçus pour débuter progressivement avec du matériel adapté et un moniteur diplômé.' }
+      ] }
+    ]
+  },
+  {
+    key: 'contact',
+    title: 'Contact',
+    description: 'Coordonnées et messages de contact.',
+    sections: [
+      { key: 'hero', title: 'Introduction', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Contactez Spotykite' },
+        { key: 'subtitle', label: 'Sous-titre', type: 'longText', fallback: 'Une question sur un stage, une carte cadeau ou une école partenaire ?' }
+      ] }
+    ]
+  },
+  {
+    key: 'cgv',
+    title: 'CGV',
+    description: 'Conditions générales de vente.',
+    sections: [
+      { key: 'main', title: 'Contenu principal', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Conditions générales de vente' },
+        { key: 'intro', label: 'Introduction', type: 'longText', fallback: 'Retrouvez les conditions applicables aux réservations et cartes cadeaux Spotykite.' }
+      ] }
+    ]
+  },
+  {
+    key: 'legal',
+    title: 'Mentions légales',
+    description: 'Informations légales du site.',
+    sections: [
+      { key: 'main', title: 'Contenu principal', fields: [
+        { key: 'title', label: 'Titre', type: 'shortText', fallback: 'Mentions légales' },
+        { key: 'intro', label: 'Introduction', type: 'longText', fallback: 'Informations relatives à l’éditeur du site et à son hébergement.' }
+      ] }
+    ]
+  },
+  {
+    key: 'footer',
+    title: 'Pied de page',
+    description: 'Texte institutionnel et liens de bas de page.',
+    sections: [
+      { key: 'main', title: 'Présentation', fields: [
+        { key: 'description', label: 'Description', type: 'longText', fallback: 'La plateforme pour réserver ou offrir une expérience kitesurf en France.' }
+      ] }
+    ]
+  }
+];
+
+const defaultContentBlocks = cmsPages.flatMap((page) => page.sections.flatMap((section) => section.fields.map((field) => ({
+  pageKey: page.key,
+  sectionKey: section.key,
+  fieldKey: field.key,
+  fieldType: contentFieldType(field.type),
+  value: field.fallback || '',
+  locale: 'fr'
+}))));
 
 function ContentsPage({ blocks, onSaved, onNotice }) {
   const [items, setItems] = useState(() => mergeDefaultContentBlocks(blocks));
-  const grouped = useMemo(() => {
-    return items.reduce((acc, item) => {
-      const key = item.pageKey || item.page_key;
-      acc[key] = acc[key] || [];
-      acc[key].push(item);
-      return acc;
-    }, {});
-  }, [items]);
+  const [selectedPageKey, setSelectedPageKey] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const selectedPage = cmsPages.find((page) => page.key === selectedPageKey);
+  const selectedPageItems = useMemo(() => {
+    if (!selectedPage) return [];
+    return items.filter((item) => item.pageKey === selectedPage.key);
+  }, [items, selectedPage]);
 
   useEffect(() => {
     setItems(mergeDefaultContentBlocks(blocks));
   }, [blocks]);
 
-  function update(index, key, value) {
-    setItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item));
+  function pageProgress(page) {
+    const fields = page.sections.flatMap((section) => section.fields);
+    const filled = page.sections.reduce((total, section) => {
+      return total + section.fields.filter((field) => findContentValue(items.filter((item) => item.pageKey === page.key), section.key, field.key, field.fallback).trim()).length;
+    }, 0);
+    return { filled, total: fields.length };
   }
 
-  async function upload(index, file) {
+  function update(pageKey, sectionKey, fieldKey, value) {
+    setItems((current) => current.map((item) => (
+      item.pageKey === pageKey && item.sectionKey === sectionKey && item.fieldKey === fieldKey
+        ? { ...item, value }
+        : item
+    )));
+  }
+
+  async function upload(pageKey, sectionKey, fieldKey, file) {
     if (!file) return;
     const dataUrl = await fileToDataUrl(file);
     const result = await api.uploadImage({ filename: file.name, dataUrl });
-    update(index, 'value', result.url);
+    update(pageKey, sectionKey, fieldKey, result.url);
   }
 
   async function save() {
+    setSaving(true);
     try {
       await api.saveContentBlocks(items);
       await onSaved();
-      onNotice('success', 'Contenus enregistrés avec succès');
+      onNotice('success', 'Modifications enregistrées avec succès');
     } catch (error) {
       onNotice('error', error.message || 'Erreur lors de l’enregistrement des contenus.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!selectedPage) {
+    return (
+      <div className="grid gap-6 pb-24">
+        <div className="rounded-[2rem] border border-border bg-white p-6 shadow-sm">
+          <p className="text-xs font-black uppercase tracking-widest text-ocean">CMS</p>
+          <div className="mt-2 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 className="text-4xl font-black text-navy">Choisissez une page à modifier</h2>
+              <p className="mt-2 max-w-2xl text-sm font-bold text-muted">Sélectionnez une page, modifiez ses textes et ses visuels, puis enregistrez toutes les modifications en une seule fois.</p>
+            </div>
+            <div className="rounded-2xl bg-sky px-4 py-3 text-sm font-black text-ocean">{cmsPages.length} pages disponibles</div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {cmsPages.map((page) => {
+            const progress = pageProgress(page);
+            return (
+              <button
+                key={page.key}
+                type="button"
+                onClick={() => setSelectedPageKey(page.key)}
+                className="group min-h-[190px] rounded-[1.5rem] border border-border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-turquoise hover:shadow-lift"
+              >
+                <div className="flex h-full flex-col justify-between gap-5">
+                  <div>
+                    <div className="mb-4 inline-grid h-11 w-11 place-items-center rounded-2xl bg-sky text-ocean transition group-hover:bg-turquoise group-hover:text-white">
+                      <FileText size={20} />
+                    </div>
+                    <h3 className="text-2xl font-black text-navy">{page.title}</h3>
+                    <p className="mt-2 text-sm font-bold leading-relaxed text-muted">{page.description}</p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-black uppercase tracking-widest text-ocean">{page.sections.length} sections</span>
+                    <span className="rounded-full bg-bg px-3 py-1 text-xs font-black text-muted">{progress.filled}/{progress.total} remplis</span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <FloatingSaveBar onSave={save} saving={saving} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-6 pb-24">
+      <button type="button" onClick={() => setSelectedPageKey(null)} className="inline-flex w-fit items-center gap-2 rounded-2xl border border-border bg-white px-4 py-3 font-black text-ocean shadow-sm">
+        <ChevronLeft size={18} /> Toutes les pages
+      </button>
+
+      <div className="rounded-[2rem] border border-border bg-white p-6 shadow-sm">
+        <p className="text-xs font-black uppercase tracking-widest text-ocean">Éditeur de page</p>
+        <h2 className="mt-2 text-4xl font-black text-navy">{selectedPage.title}</h2>
+        <p className="mt-2 max-w-2xl text-sm font-bold text-muted">{selectedPage.description}</p>
+      </div>
+
+      <div className="grid gap-6">
+        {selectedPage.sections.map((section) => (
+          <section key={section.key} className="rounded-[1.5rem] border border-border bg-white p-5 shadow-sm">
+            <div className="mb-5 border-b border-border pb-4">
+              <h3 className="text-2xl font-black text-navy">{section.title}</h3>
+            </div>
+            <div className="grid gap-5">
+              {section.fields.map((field) => (
+                <CmsField
+                  key={`${section.key}-${field.key}`}
+                  pageKey={selectedPage.key}
+                  sectionKey={section.key}
+                  field={field}
+                  value={findContentValue(selectedPageItems, section.key, field.key, field.fallback)}
+                  onChange={(value) => update(selectedPage.key, section.key, field.key, value)}
+                  onUpload={(file) => upload(selectedPage.key, section.key, field.key, file)}
+                />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <FloatingSaveBar onSave={save} saving={saving} />
+    </div>
+  );
+}
+
+function CmsField({ field, value, onChange, onUpload }) {
+  if (field.type === 'image') {
+    return (
+      <div className="grid gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <label className="text-sm font-black text-navy">{field.label}</label>
+          <label className="btn-secondary cursor-pointer justify-center text-sm">
+            Changer l'image
+            <input className="hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => onUpload(event.target.files?.[0])} />
+          </label>
+        </div>
+        <div className="overflow-hidden rounded-3xl border border-border bg-bg">
+          {value ? (
+            <img src={value} alt="" className="h-64 w-full object-cover" />
+          ) : (
+            <div className="grid h-64 place-items-center text-sm font-black text-muted">Aucun visuel sélectionné</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (field.type === 'longText') {
+    return (
+      <label className="grid gap-2">
+        <span className="text-sm font-black text-navy">{field.label}</span>
+        <textarea className="field min-h-36 resize-y leading-relaxed" value={value} onChange={(event) => onChange(event.target.value)} />
+      </label>
+    );
+  }
+
+  return (
+    <label className="grid gap-2">
+      <span className="text-sm font-black text-navy">{field.label}</span>
+      <input className="field" value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function FloatingSaveBar({ onSave, saving }) {
+  return (
+    <div className="sticky bottom-4 z-20 rounded-3xl border border-border bg-white/95 p-4 shadow-lift backdrop-blur">
+      <button className="btn-primary w-full justify-center disabled:opacity-60" type="button" onClick={onSave} disabled={saving}>
+        <Save size={18} /> {saving ? 'Enregistrement...' : 'Enregistrer les modifications'}
+      </button>
+    </div>
+  );
+}
+
+const seoSectionLabels = {
+  why: 'Pourquoi faire un stage de kitesurf dans cette ville ?',
+  spots: 'Les meilleurs spots de kitesurf autour de cette ville',
+  around: 'Où apprendre le kitesurf autour de cette ville ?',
+  choose: 'Quel stage choisir ?',
+  audience: 'À qui s’adresse un stage de kitesurf ?',
+  level: 'Quel niveau pour commencer ?',
+  price: 'Combien coûte un stage ?',
+  period: 'Meilleure période pour pratiquer',
+  whySpotykite: 'Pourquoi réserver sur Spotykite ?',
+  firstLesson: 'Comment se déroule un premier cours ?',
+  gift: 'Carte cadeau kitesurf'
+};
+
+const blankSeoCityPage = {
+  city: '',
+  department: '',
+  region: '',
+  slug: '',
+  metaTitle: '',
+  metaDescription: '',
+  h1: '',
+  intro: '',
+  status: 'draft',
+  radiusKm: 50,
+  selectedSchoolIds: [],
+  destinationSummary: '',
+  nearbySpots: [],
+  recommendedLevel: '',
+  idealPeriod: '',
+  priceRange: '',
+  latitude: '',
+  longitude: '',
+  sections: {
+    why: '',
+    spots: '',
+    around: '',
+    choose: '',
+    audience: '',
+    level: '',
+    price: '',
+    period: '',
+    whySpotykite: '',
+    firstLesson: '',
+    gift: ''
+  },
+  faq: [
+    { question: '', answer: '' },
+    { question: '', answer: '' },
+    { question: '', answer: '' }
+  ]
+};
+
+function SeoCityPagesPage({ pages, schools, onSaved, onNotice }) {
+  const [query, setQuery] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(blankSeoCityPage);
+  const [saving, setSaving] = useState(false);
+  const editing = editingId !== null;
+
+  const filteredPages = useMemo(() => {
+    const normalized = normalize(query);
+    return pages.filter((page) => !normalized || normalize([page.city, page.department, page.region, page.slug].join(' ')).includes(normalized));
+  }, [pages, query]);
+
+  const associatedSchools = useMemo(() => {
+    const citySlug = slugify(form.city);
+    const exact = schools.filter((school) => slugify(school.city) === citySlug || slugify(school.spot) === citySlug);
+    const selected = schools.filter((school) => form.selectedSchoolIds.map(Number).includes(Number(school.id)) && !exact.some((item) => Number(item.id) === Number(school.id)));
+    const lat = Number(form.latitude);
+    const lng = Number(form.longitude);
+    const nearby = Number.isFinite(lat) && Number.isFinite(lng)
+      ? schools
+          .filter((school) => school.latitude && school.longitude && !exact.some((item) => Number(item.id) === Number(school.id)) && !selected.some((item) => Number(item.id) === Number(school.id)))
+          .map((school) => ({ ...school, distance: distanceKm(lat, lng, Number(school.latitude), Number(school.longitude)) }))
+          .filter((school) => school.distance <= Number(form.radiusKm || 50))
+          .sort((a, b) => a.distance - b.distance)
+          .slice(0, 8)
+      : [];
+    return { exact, selected, nearby };
+  }, [schools, form.city, form.latitude, form.longitude, form.radiusKm, form.selectedSchoolIds]);
+
+  function startCreate() {
+    setEditingId(null);
+    setForm(blankSeoCityPage);
+  }
+
+  async function startEdit(page) {
+    try {
+      const detail = await api.seoCityPage(page.id);
+      setEditingId(detail.id);
+      setForm(seoCityForm(detail));
+    } catch (error) {
+      onNotice('error', error.message || 'Impossible de charger cette page.');
+    }
+  }
+
+  function update(name, value) {
+    setForm((current) => {
+      const next = { ...current, [name]: value };
+      if (name === 'city' && !editing) {
+        const slug = slugify(value);
+        next.slug = slug;
+        next.h1 = value ? `Stage de kitesurf à ${value}` : '';
+        next.metaTitle = value ? `Stage kitesurf ${value} | Écoles et cours Spotykite` : '';
+        next.metaDescription = value ? `Trouvez une école de kitesurf à ${value} ou à proximité et réservez votre stage facilement.` : '';
+      }
+      return next;
+    });
+  }
+
+  function updateSection(key, value) {
+    setForm((current) => ({ ...current, sections: { ...current.sections, [key]: value } }));
+  }
+
+  function toggleSchool(id) {
+    setForm((current) => {
+      const selected = new Set(current.selectedSchoolIds.map(Number));
+      selected.has(Number(id)) ? selected.delete(Number(id)) : selected.add(Number(id));
+      return { ...current, selectedSchoolIds: [...selected] };
+    });
+  }
+
+  function updateFaq(index, key, value) {
+    setForm((current) => ({
+      ...current,
+      faq: current.faq.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item)
+    }));
+  }
+
+  function addFaq() {
+    setForm((current) => ({ ...current, faq: [...current.faq, { question: '', answer: '' }] }));
+  }
+
+  function removeFaq(index) {
+    setForm((current) => ({ ...current, faq: current.faq.filter((_, itemIndex) => itemIndex !== index) }));
+  }
+
+  function publishIssues() {
+    const issues = [];
+    if (!form.city.trim()) issues.push('Ville manquante');
+    if (!form.slug.trim()) issues.push('Slug manquant');
+    if (!form.metaTitle.trim()) issues.push('Meta title manquant');
+    if (!form.metaDescription.trim()) issues.push('Meta description manquante');
+    if (!form.h1.trim()) issues.push('H1 manquant');
+    if (!form.intro.trim()) issues.push('Introduction manquante');
+    if (!Object.values(form.sections).some((value) => String(value || '').trim().length > 40)) issues.push('Au moins une section SEO doit être personnalisée');
+    if (!form.faq.some((item) => item.question.trim() && item.answer.trim())) issues.push('Au moins une question/réponse FAQ est requise');
+    return issues;
+  }
+
+  async function save() {
+    const issues = publishIssues();
+    if (form.status === 'published' && issues.length) {
+      onNotice('error', `Publication impossible : ${issues.join(', ')}.`);
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        ...form,
+        slug: slugify(form.slug),
+        nearbySpots: Array.isArray(form.nearbySpots) ? form.nearbySpots : String(form.nearbySpots || '').split('\n').map((item) => item.trim()).filter(Boolean),
+        faq: form.faq.filter((item) => item.question.trim() || item.answer.trim())
+      };
+      editingId ? await api.updateSeoCityPage(editingId, payload) : await api.createSeoCityPage(payload);
+      await onSaved();
+      onNotice('success', 'Page SEO ville enregistrée.');
+      setEditingId(null);
+      setForm(blankSeoCityPage);
+    } catch (error) {
+      onNotice('error', error.message || 'Erreur lors de l’enregistrement.');
+    } finally {
+      setSaving(false);
     }
   }
 
   return (
-    <div className="grid gap-6">
-      {Object.entries(grouped).map(([pageKey, pageItems]) => (
-        <Panel key={pageKey} title={`Page : ${pageKey}`}>
-          <div className="grid gap-4">
-            {pageItems.map((item) => {
-              const index = items.indexOf(item);
-              const fieldType = item.fieldType || item.field_type || 'text';
-              return (
-                <div key={`${item.pageKey}-${item.sectionKey}-${item.fieldKey}`} className="rounded-2xl border border-border bg-bg p-4">
-                  <div className="mb-3 grid gap-2 md:grid-cols-4">
-                    <input className="field" value={item.pageKey || ''} onChange={(event) => update(index, 'pageKey', event.target.value)} placeholder="page_key" />
-                    <input className="field" value={item.sectionKey || ''} onChange={(event) => update(index, 'sectionKey', event.target.value)} placeholder="section_key" />
-                    <input className="field" value={item.fieldKey || ''} onChange={(event) => update(index, 'fieldKey', event.target.value)} placeholder="field_key" />
-                    <select className="field" value={fieldType} onChange={(event) => update(index, 'fieldType', event.target.value)}>
-                      {['text', 'textarea', 'richtext', 'image', 'url', 'boolean'].map((type) => <option key={type}>{type}</option>)}
-                    </select>
-                  </div>
-                  {fieldType === 'textarea' || fieldType === 'richtext' ? (
-                    <textarea className="field min-h-28" value={item.value || ''} onChange={(event) => update(index, 'value', event.target.value)} />
-                  ) : fieldType === 'image' ? (
-                    <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                      <input className="field" value={item.value || ''} onChange={(event) => update(index, 'value', event.target.value)} placeholder="/uploads/image.webp" />
-                      <input className="field" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => upload(index, event.target.files?.[0])} />
-                      {item.value && <img src={item.value} alt="" className="h-32 w-full rounded-2xl object-cover md:col-span-2" />}
+    <div className="grid gap-6 pb-24">
+      <Panel title="Pages SEO villes">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <SearchField value={query} onChange={setQuery} placeholder="Rechercher par ville, département, région..." />
+          <button type="button" className="btn-primary justify-center" onClick={startCreate}><Plus size={18} /> Créer une page ville</button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] text-left text-sm">
+            <thead className="bg-sky/60 text-xs uppercase text-muted">
+              <tr>{['Ville', 'Statut', 'Slug', 'Dernière modification', 'Actions'].map((label) => <th key={label} className="px-4 py-3 font-black">{label}</th>)}</tr>
+            </thead>
+            <tbody>
+              {filteredPages.map((page) => (
+                <tr key={page.id} className="border-b border-border bg-white">
+                  <td className="px-4 py-4 font-black">{page.city}<span className="block text-xs font-bold text-muted">{[page.department, page.region].filter(Boolean).join(' · ')}</span></td>
+                  <td className="px-4 py-4"><StatusBadge value={page.status === 'published' ? 'publiée' : 'brouillon'} /></td>
+                  <td className="px-4 py-4 font-mono text-xs">/stage-kitesurf-{page.slug}</td>
+                  <td className="px-4 py-4">{formatDate(page.updatedAt)}</td>
+                  <td className="px-4 py-4">
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className="rounded-xl border border-border px-3 py-2 font-black text-ocean" onClick={() => startEdit(page)}><Edit3 size={15} className="inline" /> Modifier</button>
+                      <a className="rounded-xl border border-border px-3 py-2 font-black text-ocean" href={`/stage-kitesurf-${page.slug}?preview=1`} target="_blank" rel="noreferrer"><Eye size={15} className="inline" /> Prévisualiser</a>
                     </div>
-                  ) : fieldType === 'boolean' ? (
-                    <AdminCheckbox label="Actif" checked={item.value === 'true' || item.value === true} onChange={(event) => update(index, 'value', event.target.checked ? 'true' : 'false')} />
-                  ) : (
-                    <input className="field" value={item.value || ''} onChange={(event) => update(index, 'value', event.target.value)} />
-                  )}
-                </div>
-              );
-            })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel title={editing ? `Modifier ${form.city || 'la page ville'}` : 'Créer une page ville'}>
+        <div className="grid gap-5">
+          <div className="grid gap-4 md:grid-cols-3">
+            <AdminInput required label="Ville" value={form.city} onChange={(value) => update('city', value)} />
+            <AdminInput label="Département" value={form.department} onChange={(value) => update('department', value)} />
+            <AdminInput label="Région" value={form.region} onChange={(value) => update('region', value)} />
+            <AdminInput label="Slug SEO" value={form.slug} onChange={(value) => update('slug', slugify(value.replace(/^stage-kitesurf-/, '')))} />
+            <AdminInput label="Latitude ville" type="number" value={form.latitude} onChange={(value) => update('latitude', value)} />
+            <AdminInput label="Longitude ville" type="number" value={form.longitude} onChange={(value) => update('longitude', value)} />
           </div>
-        </Panel>
-      ))}
-      <div className="sticky bottom-4 z-10 rounded-3xl border border-border bg-white p-4 shadow-lift">
-        <button className="btn-primary w-full justify-center" type="button" onClick={save}>
-          <Save size={18} /> Enregistrer les contenus
-        </button>
-      </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <AdminInput label="Meta title" value={form.metaTitle} onChange={(value) => update('metaTitle', value)} />
+            <AdminInput label="H1" value={form.h1} onChange={(value) => update('h1', value)} />
+            <AdminTextarea label="Meta description" value={form.metaDescription} onChange={(value) => update('metaDescription', value)} maxLength={180} />
+            <AdminTextarea label="Introduction courte" value={form.intro} onChange={(value) => update('intro', value)} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <label className="grid gap-2 text-sm font-bold text-muted">
+              Statut
+              <select className="field" value={form.status} onChange={(event) => update('status', event.target.value)}>
+                <option value="draft">Brouillon</option>
+                <option value="published">Publiée</option>
+              </select>
+            </label>
+            <label className="grid gap-2 text-sm font-bold text-muted">
+              Rayon centres proches
+              <select className="field" value={form.radiusKm} onChange={(event) => update('radiusKm', Number(event.target.value))}>
+                {[20, 50, 100].map((value) => <option key={value} value={value}>{value} km</option>)}
+              </select>
+            </label>
+            <AdminInput label="Fourchette de prix" value={form.priceRange} onChange={(value) => update('priceRange', value)} placeholder="À partir de 89 €" />
+          </div>
+        </div>
+      </Panel>
+
+      <Panel title="Geo / IA Search">
+        <div className="grid gap-4 md:grid-cols-2">
+          <AdminTextarea label="Résumé court de la destination" value={form.destinationSummary} onChange={(value) => update('destinationSummary', value)} />
+          <AdminTextarea label="Spots proches" value={Array.isArray(form.nearbySpots) ? form.nearbySpots.join('\n') : form.nearbySpots} onChange={(value) => update('nearbySpots', value)} placeholder="Un spot par ligne" />
+          <AdminInput label="Niveau conseillé" value={form.recommendedLevel} onChange={(value) => update('recommendedLevel', value)} />
+          <AdminInput label="Période idéale" value={form.idealPeriod} onChange={(value) => update('idealPeriod', value)} />
+        </div>
+      </Panel>
+
+      <Panel title="Centres associés">
+        <div className="grid gap-4 md:grid-cols-2">
+          {schools.map((school) => (
+            <label key={school.id} className="flex items-start gap-3 rounded-2xl border border-border bg-bg p-4">
+              <input type="checkbox" checked={form.selectedSchoolIds.map(Number).includes(Number(school.id))} onChange={() => toggleSchool(school.id)} className="mt-1" />
+              <span>
+                <span className="block font-black text-navy">{school.name}</span>
+                <span className="text-sm font-bold text-muted">{school.city} · {school.department || school.region}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="mt-5 rounded-2xl border border-turquoise/25 bg-sky/50 p-4">
+          <p className="font-black text-ocean">Aperçu des centres affichés</p>
+          <p className="mt-1 text-sm font-bold text-muted">
+            {associatedSchools.exact.length ? `${associatedSchools.exact.length} centre(s) dans la ville.` : `${associatedSchools.nearby.length} centre(s) proche(s) dans le rayon choisi.`}
+          </p>
+        </div>
+      </Panel>
+
+      <Panel title="Sections SEO">
+        <div className="grid gap-5">
+          {Object.entries(seoSectionLabels).map(([key, label]) => (
+            <AdminTextarea key={key} label={label} value={form.sections[key] || ''} onChange={(value) => updateSection(key, value)} rows={5} />
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="FAQ SEO locale">
+        <div className="grid gap-4">
+          {form.faq.map((item, index) => (
+            <div key={index} className="rounded-2xl border border-border bg-bg p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="font-black text-navy">Question {index + 1}</p>
+                <button type="button" className="rounded-xl border border-border bg-white px-3 py-2 text-xs font-black text-red-600" onClick={() => removeFaq(index)}>Supprimer</button>
+              </div>
+              <div className="grid gap-3">
+                <AdminInput label="Question" value={item.question} onChange={(value) => updateFaq(index, 'question', value)} />
+                <AdminTextarea label="Réponse" value={item.answer} onChange={(value) => updateFaq(index, 'answer', value)} />
+              </div>
+            </div>
+          ))}
+          <button type="button" className="btn-secondary w-fit" onClick={addFaq}><Plus size={16} /> Ajouter une question</button>
+        </div>
+      </Panel>
+
+      <FloatingSaveBar onSave={save} saving={saving} />
     </div>
   );
+}
+
+function seoCityForm(page) {
+  return {
+    ...blankSeoCityPage,
+    ...page,
+    status: page.status === 'published' ? 'published' : 'draft',
+    radiusKm: page.radiusKm || 50,
+    latitude: page.latitude ?? '',
+    longitude: page.longitude ?? '',
+    selectedSchoolIds: page.selectedSchoolIds || [],
+    nearbySpots: page.nearbySpots || [],
+    sections: { ...blankSeoCityPage.sections, ...(page.sections || {}) },
+    faq: page.faq?.length ? page.faq : blankSeoCityPage.faq
+  };
 }
 
 function ProspectsPage({ prospects, onReload, onNotice }) {
@@ -1765,8 +2421,6 @@ function SettingsPage() {
   return (
     <Panel title="Paramètres">
       <div className="grid gap-4 md:grid-cols-2">
-        <Detail label="Accès temporaire" value="Code localStorage : spotykite-admin" />
-        <Detail label="Connexion future" value="Prévu pour auth API / base de données" />
         <Detail label="Commission par défaut" value="12% à 15%" />
         <Detail label="Notifications" value="Email admin à brancher" />
       </div>
@@ -1977,6 +2631,18 @@ function Pagination({ page, pageSize, total, onPageChange }) {
 
 function normalize(value) {
   return String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function contentFieldType(type) {
+  if (type === 'longText') return 'textarea';
+  if (type === 'image') return 'image';
+  return 'text';
+}
+
+function findContentValue(items, sectionKey, fieldKey, fallback = '') {
+  const item = items.find((contentItem) => contentItem.sectionKey === sectionKey && contentItem.fieldKey === fieldKey);
+  const value = item?.value;
+  return value === undefined || value === null || value === '' ? fallback || '' : String(value);
 }
 
 function mergeDefaultContentBlocks(blocks = []) {
